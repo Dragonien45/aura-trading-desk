@@ -9,16 +9,6 @@ app.use(express.json());
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-// FX Conversion Rates to Danish Kroner (DKK)
-const FX_RATES_TO_DKK = {
-  'DKK': 1.0,
-  'USD': 6.85,
-  'EUR': 7.46,
-  'GBP': 8.85,
-  'SEK': 0.65,
-  'NOK': 0.64
-};
-
 // Persistent In-Memory Store
 globalThis.__AURA_DB = globalThis.__AURA_DB || {
   users: [],
@@ -141,41 +131,6 @@ async function getYahooSession() {
 
 const quoteCache = {};
 
-function searchYahoo(query) {
-  return new Promise(async (resolve) => {
-    if (!query || !query.trim()) return resolve([]);
-    const session = await getYahooSession();
-    const cleanQuery = encodeURIComponent(query.trim());
-    let path = `/v1/finance/search?q=${cleanQuery}&quotesCount=12&newsCount=0`;
-    if (session.crumb) path += `&crumb=${encodeURIComponent(session.crumb)}`;
-
-    const headers = { 'User-Agent': USER_AGENT, 'Accept': 'application/json' };
-    if (session.cookie) headers['Cookie'] = session.cookie;
-
-    const req = https.request({ hostname: 'query2.finance.yahoo.com', path, method: 'GET', headers }, (res) => {
-      let data = '';
-      res.on('data', c => { data += c; });
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          const results = (parsed.quotes || [])
-            .filter(q => q.symbol && ['EQUITY', 'ETF', 'CRYPTOCURRENCY', 'CURRENCY', 'INDEX'].includes(q.quoteType))
-            .map(q => ({
-              symbol: q.symbol.toUpperCase(),
-              name: q.shortname || q.longname || q.symbol,
-              exchange: q.exchange || 'Global',
-              type: q.quoteType || 'Asset'
-            }));
-          resolve(results);
-        } catch { resolve([]); }
-      });
-    });
-    req.on('error', () => resolve([]));
-    req.setTimeout(4500, () => { req.destroy(); resolve([]); });
-    req.end();
-  });
-}
-
 function fetchYahooQuote(symbol) {
   return new Promise(async (resolve) => {
     const clean = symbol.trim().toUpperCase();
@@ -217,11 +172,62 @@ function fetchYahooQuote(symbol) {
             }
           }
         } catch {}
-        resolve({ symbol: clean, name: clean, currency: clean.endsWith('.CO') ? 'DKK' : 'USD', price: 0, change: 0, changePercent: 0, isLive: false });
+        resolve(null);
       });
     });
-    req.on('error', () => resolve({ symbol: clean, name: clean, currency: clean.endsWith('.CO') ? 'DKK' : 'USD', price: 0, change: 0, changePercent: 0, isLive: false }));
-    req.setTimeout(4500, () => { req.destroy(); resolve({ symbol: clean, name: clean, currency: clean.endsWith('.CO') ? 'DKK' : 'USD', price: 0, change: 0, changePercent: 0, isLive: false }); });
+    req.on('error', () => resolve(null));
+    req.setTimeout(4500, () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+// Fetch real-time FX conversion rate to DKK from Yahoo Finance (e.g. USDDKK=X)
+async function getLiveFxRateToDKK(currency) {
+  const cleanCurr = (currency || 'USD').trim().toUpperCase();
+  if (cleanCurr === 'DKK') return 1.0;
+
+  const fxSymbol = `${cleanCurr}DKK=X`;
+  const quote = await fetchYahooQuote(fxSymbol);
+  if (quote && quote.price > 0) {
+    return quote.price;
+  }
+
+  // Fallbacks if FX market quote is temporarily unreachable
+  const defaults = { 'USD': 6.85, 'EUR': 7.46, 'GBP': 8.85, 'SEK': 0.65, 'NOK': 0.64 };
+  return defaults[cleanCurr] || 6.85;
+}
+
+function searchYahoo(query) {
+  return new Promise(async (resolve) => {
+    if (!query || !query.trim()) return resolve([]);
+    const session = await getYahooSession();
+    const cleanQuery = encodeURIComponent(query.trim());
+    let path = `/v1/finance/search?q=${cleanQuery}&quotesCount=12&newsCount=0`;
+    if (session.crumb) path += `&crumb=${encodeURIComponent(session.crumb)}`;
+
+    const headers = { 'User-Agent': USER_AGENT, 'Accept': 'application/json' };
+    if (session.cookie) headers['Cookie'] = session.cookie;
+
+    const req = https.request({ hostname: 'query2.finance.yahoo.com', path, method: 'GET', headers }, (res) => {
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          const results = (parsed.quotes || [])
+            .filter(q => q.symbol && ['EQUITY', 'ETF', 'CRYPTOCURRENCY', 'CURRENCY', 'INDEX'].includes(q.quoteType))
+            .map(q => ({
+              symbol: q.symbol.toUpperCase(),
+              name: q.shortname || q.longname || q.symbol,
+              exchange: q.exchange || 'Global',
+              type: q.quoteType || 'Asset'
+            }));
+          resolve(results);
+        } catch { resolve([]); }
+      });
+    });
+    req.on('error', () => resolve([]));
+    req.setTimeout(4500, () => { req.destroy(); resolve([]); });
     req.end();
   });
 }
@@ -389,14 +395,15 @@ router.get('/portfolios/:userId', async (req, res) => {
 
 router.post('/portfolios/trade', async (req, res) => {
   try {
-    const { portfolioId, symbol, type, shares, price, currency, totalDKK } = req.body;
+    const { portfolioId, symbol, type, shares, price, currency } = req.body;
     const qty = parseFloat(shares);
     const execPrice = parseFloat(price);
     const upperSym = symbol.toUpperCase();
     const curr = currency || (upperSym.endsWith('.CO') ? 'DKK' : 'USD');
-    const fxRate = FX_RATES_TO_DKK[curr] || 6.85;
-
-    const costDKK = totalDKK !== undefined ? parseFloat(totalDKK) : (qty * execPrice * fxRate);
+    
+    // Fetch live real-time FX conversion rate from Yahoo Finance
+    const fxRate = await getLiveFxRateToDKK(curr);
+    const costDKK = qty * execPrice * fxRate;
 
     if (pool) {
       const pRes = await pool.query('SELECT * FROM portfolios WHERE id = $1', [portfolioId]);
@@ -546,17 +553,24 @@ router.get('/leaderboard', async (req, res) => {
       positions = memoryDb.positions;
     }
 
-    const leaderboard = portfolios.map(p => {
+    // Pre-fetch live FX rates for currencies in positions
+    const uniqueCurrencies = [...new Set(positions.map(pos => pos.currency || (pos.symbol.endsWith('.CO') ? 'DKK' : 'USD')))];
+    const fxRatesMap = {};
+    await Promise.all(uniqueCurrencies.map(async curr => {
+      fxRatesMap[curr] = await getLiveFxRateToDKK(curr);
+    }));
+
+    const leaderboard = await Promise.all(portfolios.map(async p => {
       const user = users.find(u => u.id === p.user_id) || { username: 'Trader' };
       const portPositions = positions.filter(pos => pos.portfolio_id === p.id);
       
       let holdingsValueDKK = 0;
-      portPositions.forEach(pos => {
+      for (const pos of portPositions) {
         const q = quoteCache[pos.symbol]?.data?.price || parseFloat(pos.avg_price);
         const curr = pos.currency || (pos.symbol.endsWith('.CO') ? 'DKK' : 'USD');
-        const fx = FX_RATES_TO_DKK[curr] || 6.85;
+        const fx = fxRatesMap[curr] || await getLiveFxRateToDKK(curr);
         holdingsValueDKK += parseFloat(pos.shares) * q * fx;
-      });
+      }
 
       const totalEquity = parseFloat(p.cash_balance) + holdingsValueDKK;
       const roi = ((totalEquity - 1000000) / 1000000) * 100;
@@ -565,12 +579,12 @@ router.get('/leaderboard', async (req, res) => {
         id: p.id,
         username: user.username,
         portfolioName: p.name,
-        totalEquity: parseFloat(totalEquity.toFixed(2)),
+        totalEquity: parseFloat(totalEquity.2 ? totalEquity.toFixed(2) : totalEquity),
         roi: parseFloat(roi.toFixed(2)),
         assetsCount: portPositions.length,
         lastActive: 'Just now'
       };
-    });
+    }));
 
     leaderboard.sort((a, b) => b.totalEquity - a.totalEquity);
     res.json(leaderboard);
