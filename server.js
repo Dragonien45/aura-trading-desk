@@ -9,7 +9,6 @@ app.use(express.json());
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-// Persistent In-Memory Store
 globalThis.__AURA_DB = globalThis.__AURA_DB || {
   users: [],
   portfolios: [],
@@ -18,7 +17,6 @@ globalThis.__AURA_DB = globalThis.__AURA_DB || {
 };
 const memoryDb = globalThis.__AURA_DB;
 
-// PostgreSQL Connection Pool
 const dbUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL;
 let pool = null;
 
@@ -161,8 +159,8 @@ function fetchYahooQuote(symbol) {
                 name: meta.shortName || meta.longName || clean,
                 currency: meta.currency || (clean.endsWith('.CO') ? 'DKK' : 'USD'),
                 exchangeName: meta.exchangeName || '',
-                price: parseFloat(price.toFixed(2)),
-                change: parseFloat(change.toFixed(2)),
+                price: parseFloat(price.toFixed(4)),
+                change: parseFloat(change.toFixed(4)),
                 changePercent: parseFloat(((change / prev) * 100).toFixed(2)),
                 marketState: 'REGULAR',
                 isLive: true
@@ -181,7 +179,6 @@ function fetchYahooQuote(symbol) {
   });
 }
 
-// Fetch real-time FX conversion rate to DKK from Yahoo Finance (e.g. USDDKK=X)
 async function getLiveFxRateToDKK(currency) {
   const cleanCurr = (currency || 'USD').trim().toUpperCase();
   if (cleanCurr === 'DKK') return 1.0;
@@ -191,10 +188,7 @@ async function getLiveFxRateToDKK(currency) {
   if (quote && quote.price > 0) {
     return quote.price;
   }
-
-  // Fallbacks if FX market quote is temporarily unreachable
-  const defaults = { 'USD': 6.85, 'EUR': 7.46, 'GBP': 8.85, 'SEK': 0.65, 'NOK': 0.64 };
-  return defaults[cleanCurr] || 6.85;
+  return cleanCurr === 'USD' ? 6.85 : 7.46; // Ultimate fallback only if forex feed times out
 }
 
 function searchYahoo(query) {
@@ -401,7 +395,6 @@ router.post('/portfolios/trade', async (req, res) => {
     const upperSym = symbol.toUpperCase();
     const curr = currency || (upperSym.endsWith('.CO') ? 'DKK' : 'USD');
     
-    // Fetch live real-time FX conversion rate from Yahoo Finance
     const fxRate = await getLiveFxRateToDKK(curr);
     const costDKK = qty * execPrice * fxRate;
 
@@ -553,7 +546,6 @@ router.get('/leaderboard', async (req, res) => {
       positions = memoryDb.positions;
     }
 
-    // Pre-fetch live FX rates for currencies in positions
     const uniqueCurrencies = [...new Set(positions.map(pos => pos.currency || (pos.symbol.endsWith('.CO') ? 'DKK' : 'USD')))];
     const fxRatesMap = {};
     await Promise.all(uniqueCurrencies.map(async curr => {
@@ -579,7 +571,7 @@ router.get('/leaderboard', async (req, res) => {
         id: p.id,
         username: user.username,
         portfolioName: p.name,
-        totalEquity: parseFloat(totalEquity.2 ? totalEquity.toFixed(2) : totalEquity),
+        totalEquity: parseFloat(totalEquity.toFixed(2)),
         roi: parseFloat(roi.toFixed(2)),
         assetsCount: portPositions.length,
         lastActive: 'Just now'
