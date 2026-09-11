@@ -33,14 +33,14 @@ const API_BASE = typeof window !== 'undefined' && window.location.origin.include
   : 'https://aura-trading-desk-ten.vercel.app/api';
 
 const QUICK_ASSETS = [
-  { symbol: 'AAPL', label: 'Apple' },
-  { symbol: 'NVDA', label: 'NVIDIA' },
-  { symbol: 'TSLA', label: 'Tesla' },
-  { symbol: 'XPEV', label: 'XPENG' },
-  { symbol: 'VWS.CO', label: 'Vestas' },
-  { symbol: 'SPY', label: 'S&P 500' },
-  { symbol: 'BTC-USD', label: 'Bitcoin' },
-  { symbol: 'ETH-USD', label: 'Ethereum' }
+  { symbol: 'AAPL', label: 'Apple', currency: 'USD' },
+  { symbol: 'NVDA', label: 'NVIDIA', currency: 'USD' },
+  { symbol: 'TSLA', label: 'Tesla', currency: 'USD' },
+  { symbol: 'XPEV', label: 'XPENG', currency: 'USD' },
+  { symbol: 'VWS.CO', label: 'Vestas', currency: 'DKK' },
+  { symbol: 'SPY', label: 'S&P 500', currency: 'USD' },
+  { symbol: 'BTC-USD', label: 'Bitcoin', currency: 'USD' },
+  { symbol: 'ETH-USD', label: 'Ethereum', currency: 'USD' }
 ];
 
 const TIMEFRAMES = ['1D', '1W', '1M', '1Y'];
@@ -104,7 +104,7 @@ export default function App() {
   const [marketLoading, setMarketLoading] = useState(false);
   const [heldLiveQuotes, setHeldLiveQuotes] = useState({});
 
-  // Live real-time scraped FX rate state
+  // Real-time FX live rate state
   const [liveFxRate, setLiveFxRate] = useState(6.85);
 
   // Order ticket state with dual-mode sizing
@@ -438,7 +438,8 @@ export default function App() {
         marketValDKK,
         costBasisDKK,
         gainDKK,
-        gainPct
+        gainPct,
+        stockName: liveData?.name || pos.symbol
       };
     });
 
@@ -933,7 +934,7 @@ export default function App() {
                   <table className="w-full text-left text-xs">
                     <thead>
                       <tr className="border-b border-slate-200 text-[10px] font-mono uppercase tracking-wider text-slate-600">
-                        <th className="pb-3">Symbol</th>
+                        <th className="pb-3">Aktiv / Navn</th>
                         <th className="pb-3 text-right">Antal</th>
                         <th className="pb-3 text-right">Gns. Pris</th>
                         <th className="pb-3 text-right">Aktuel Pris</th>
@@ -952,9 +953,22 @@ export default function App() {
                       ) : (
                         holdingsCalculations.items.map(pos => (
                           <tr key={pos.id || pos.symbol} className="hover:bg-slate-50 transition">
-                            <td className="py-3.5 font-bold text-slate-950">
-                              {pos.symbol}
-                              <span className="ml-1 text-[10px] text-slate-400 font-normal">({pos.currency})</span>
+                            <td className="py-3.5">
+                              <button
+                                onClick={() => {
+                                  selectAsset(pos.symbol);
+                                  setActiveTab('markets');
+                                }}
+                                className="text-left group cursor-pointer"
+                              >
+                                <div className="font-bold text-slate-950 group-hover:text-blue-600 transition flex items-center gap-1.5">
+                                  <span>{pos.symbol}</span>
+                                  <span className="text-[10px] text-slate-400 font-normal">({pos.currency})</span>
+                                </div>
+                                <div className="text-[11px] text-slate-500 font-normal truncate max-w-[180px] font-sans">
+                                  {pos.stockName}
+                                </div>
+                              </button>
                             </td>
                             <td className="py-3.5 text-right text-slate-800">{pos.shares.toLocaleString()}</td>
                             <td className="py-3.5 text-right text-slate-800">{formatNativePrice(pos.avgPrice, pos.currency)}</td>
@@ -1106,7 +1120,7 @@ export default function App() {
                       <span className="text-xs font-mono font-bold px-2 py-0.5 bg-slate-100 text-slate-700 rounded">
                         {activeCurrency}
                       </span>
-                      <span className="text-[10px] font-mono bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded">
+                      <span className="text-xs font-mono px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded">
                         1 {activeCurrency} = {liveFxRate.toFixed(2)} DKK (Live)
                       </span>
                       <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded-full font-semibold ${
