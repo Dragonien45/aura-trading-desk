@@ -7,17 +7,14 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// In-memory persistent fallback store for Vercel serverless containers
 globalThis.__AURA_DB = globalThis.__AURA_DB || {
   users: [],
   portfolios: [],
   positions: [],
   transactions: []
 };
-
 const memoryDb = globalThis.__AURA_DB;
 
-// PostgreSQL Connection Pool (Used if POSTGRES_URL / DATABASE_URL is configured)
 const dbUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL;
 let pool = null;
 
@@ -29,11 +26,10 @@ if (dbUrl) {
       ssl: { rejectUnauthorized: false }
     });
   } catch (e) {
-    console.error('PostgreSQL initialization skipped:', e.message);
+    console.error('PostgreSQL init error:', e.message);
   }
 }
 
-// Database schema initialization
 async function initDb() {
   if (!pool) return;
   try {
@@ -72,12 +68,11 @@ async function initDb() {
       );
     `);
   } catch (err) {
-    console.error('PostgreSQL schema migration error:', err.message);
+    console.error('Schema init error:', err.message);
   }
 }
 initDb();
 
-// Yahoo Finance Quote Scraper & Pricing Cache
 const quoteCache = {};
 
 function fetchYahooQuote(symbol) {
@@ -87,8 +82,7 @@ function fetchYahooQuote(symbol) {
       return resolve(cached.data);
     }
 
-    const encodedSymbol = encodeURIComponent(symbol);
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodedSymbol}?interval=1m&range=1d`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d`;
     const options = {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -130,7 +124,7 @@ function fetchYahooQuote(symbol) {
             quoteCache[symbol] = { timestamp: Date.now(), data: result };
             return resolve(result);
           }
-        } catch (e) {}
+        } catch {}
         resolve(getFallbackQuote(symbol));
       });
     });
@@ -207,7 +201,7 @@ function fetchYahooChart(symbol, range = '1M') {
             }
           }
           if (history.length > 0) return resolve(history);
-        } catch (e) {}
+        } catch {}
         resolve([]);
       });
     });
@@ -217,7 +211,6 @@ function fetchYahooChart(symbol, range = '1M') {
   });
 }
 
-// Universal Router (Handles both /api/* and direct routing rewrites)
 const router = express.Router();
 
 router.get('/health', async (req, res) => {
@@ -265,7 +258,12 @@ router.post('/auth/register', async (req, res) => {
       }
     }
 
-    res.status(201).json({ id: userId, username: cleanUser });
+    // Return both flat and nested keys to support all client formats
+    res.status(201).json({
+      id: userId,
+      username: cleanUser,
+      user: { id: userId, username: cleanUser }
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -289,7 +287,11 @@ router.post('/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid username or access code' });
     }
 
-    res.json({ id: user.id, username: user.username });
+    res.json({
+      id: user.id,
+      username: user.username,
+      user: { id: user.id, username: user.username }
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -550,11 +552,9 @@ router.get('/leaderboard', async (req, res) => {
   }
 });
 
-// Register routes for both rewritten and root scopes
 app.use('/api', router);
 app.use('/', router);
 
-// Export for Vercel serverless functions
 module.exports = app;
 
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
