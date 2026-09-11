@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -12,24 +12,14 @@ import {
   CartesianGrid
 } from 'recharts';
 import {
-  TrendingUp,
-  TrendingDown,
-  DollarSign,
-  PieChart as PieChartIcon,
   Briefcase,
   Layers,
   Trophy,
   Search,
-  ArrowUpRight,
-  ArrowDownRight,
   RefreshCw,
-  Sliders,
-  ShieldCheck,
   CheckCircle2,
   AlertCircle,
-  Clock,
   LogOut,
-  ChevronDown,
   Building2,
   Activity,
   Server
@@ -60,7 +50,7 @@ export default function App() {
     }
   });
 
-  const [authMode, setAuthMode] = useState('register');
+  const [authMode, setAuthMode] = useState('login');
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
@@ -89,7 +79,6 @@ export default function App() {
   const [newName, setNewName] = useState('');
   const [leaderboard, setLeaderboard] = useState([]);
 
-  // Check backend server & PostgreSQL connection
   const checkHealth = async () => {
     try {
       const res = await fetch(`${API_BASE}/health`);
@@ -114,7 +103,6 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Fetch portfolio data from database
   const refreshUserData = async (targetUserId) => {
     const uId = targetUserId || user?.id;
     if (!uId) return;
@@ -142,7 +130,6 @@ export default function App() {
     }
   }, [user]);
 
-  // Fetch market quotes and candle data from Yahoo Finance
   const fetchMarketData = async (symbol, range = activeTimeframe) => {
     setMarketLoading(true);
     try {
@@ -183,14 +170,15 @@ export default function App() {
     }
   };
 
-  // Active Portfolio calculations
   const activePortfolio = useMemo(() => {
     if (!portfolios || portfolios.length === 0) return null;
     return portfolios.find(p => p.id === activePortfolioId) || portfolios[0];
   }, [portfolios, activePortfolioId]);
 
   const holdingsCalculations = useMemo(() => {
-    if (!activePortfolio) return { totalMarketValue: 0, unrealizedGain: 0, items: [] };
+    if (!activePortfolio) {
+      return { totalMarketValue: 0, unrealizedGain: 0, unrealizedGainPct: 0, items: [] };
+    }
     let totalMarketValue = 0;
     let totalCostBasis = 0;
 
@@ -219,9 +207,8 @@ export default function App() {
     return { totalMarketValue, unrealizedGain, unrealizedGainPct, items };
   }, [activePortfolio, quote, selectedSymbol]);
 
-  const totalEquity = (activePortfolio?.cashBalance || 0) + holdingsCalculations.totalMarketValue;
+  const totalEquity = (activePortfolio?.cashBalance || 0) + (holdingsCalculations.totalMarketValue || 0);
 
-  // Defensive Authentication Handler
   const handleAuth = async (e) => {
     e.preventDefault();
     setAuthLoading(true);
@@ -238,7 +225,6 @@ export default function App() {
         throw new Error(data?.error || 'Authentication failed');
       }
 
-      // Safe extraction: supports { id, username } or nested { user: { id, username } }
       const resolvedUser = (data && data.user) ? data.user : data;
       if (!resolvedUser || !resolvedUser.id) {
         throw new Error('Database returned invalid profile format');
@@ -262,7 +248,6 @@ export default function App() {
     setPortfolios([]);
   };
 
-  // Trade Execution
   const handleTrade = async () => {
     if (!activePortfolio?.id || !quote?.price) return;
     const qty = parseFloat(orderShares);
@@ -304,7 +289,6 @@ export default function App() {
     }
   };
 
-  // Portfolio Management
   const handleReset = async () => {
     if (!activePortfolio?.id) return;
     if (!window.confirm('Reset this portfolio? Active positions will be liquidated and cash restored to $1,000,000.00.')) return;
@@ -341,20 +325,18 @@ export default function App() {
     }
   };
 
-  // Search auto-complete
   const filteredSymbols = WATCHLIST_SYMBOLS.filter(s =>
     s.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
     s.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // Allocation donut data
   const allocationData = useMemo(() => {
     if (!activePortfolio) return [];
-    const cash = activePortfolio.cashBalance;
+    const cash = activePortfolio.cashBalance || 0;
     const data = [{ name: 'Cash Reserves', value: cash, color: '#0F172A' }];
     const colors = ['#2563EB', '#0D9488', '#F59E0B', '#8B5CF6', '#EC4899', '#10B981'];
 
-    holdingsCalculations.items.forEach((pos, idx) => {
+    (holdingsCalculations.items || []).forEach((pos, idx) => {
       data.push({
         name: pos.symbol,
         value: pos.marketValue,
@@ -467,6 +449,15 @@ export default function App() {
     );
   }
 
+  if (portfolios.length === 0 && portfolioLoading) {
+    return (
+      <div className="min-h-screen bg-[#FBFBF9] flex flex-col items-center justify-center gap-3 font-mono text-xs text-slate-600">
+        <RefreshCw className="w-6 h-6 animate-spin text-slate-900" />
+        <span>Loading institutional desks from PostgreSQL...</span>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#FBFBF9] text-slate-900 flex flex-col font-sans">
       {/* Top Navigation */}
@@ -506,11 +497,10 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4">
-            {/* Quick Switcher */}
             {portfolios.length > 0 && (
               <div className="hidden sm:flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg text-xs font-mono">
-                <span className="text-slate-500">{activePortfolio?.name}:</span>
-                <span className="font-bold text-slate-900">${totalEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                <span className="text-slate-500">{activePortfolio?.name || 'Desk'}:</span>
+                <span className="font-bold text-slate-900">${(totalEquity || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 <select
                   aria-label="Active Portfolio Switcher"
                   value={activePortfolioId || ''}
@@ -525,7 +515,7 @@ export default function App() {
             )}
 
             <div className="flex items-center gap-3 border-l border-slate-200 pl-4">
-              <span className="text-xs font-medium text-slate-700 font-mono hidden sm:inline">{user.username}</span>
+              <span className="text-xs font-medium text-slate-700 font-mono hidden sm:inline">{user?.username}</span>
               <button
                 onClick={handleLogout}
                 className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-slate-100 rounded-md transition"
@@ -543,12 +533,11 @@ export default function App() {
         {/* DASHBOARD TAB */}
         {activeTab === 'dashboard' && (
           <div className="space-y-6">
-            {/* Metric KPI Ribbon */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
                 <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600 mb-1">Total Portfolio Equity</div>
                 <div className="text-2xl font-mono font-bold text-slate-950">
-                  ${totalEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  ${(totalEquity || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
                 <div className="text-xs font-mono text-slate-600 mt-2 flex items-center gap-1">
                   Baseline: $1,000,000.00
@@ -567,19 +556,19 @@ export default function App() {
 
               <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
                 <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600 mb-1">Unrealized P&L</div>
-                <div className={`text-2xl font-mono font-bold flex items-center gap-1 ${holdingsCalculations.unrealizedGain >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                  {holdingsCalculations.unrealizedGain >= 0 ? '+' : ''}
-                  ${holdingsCalculations.unrealizedGain.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                <div className={`text-2xl font-mono font-bold flex items-center gap-1 ${(holdingsCalculations.unrealizedGain || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  {(holdingsCalculations.unrealizedGain || 0) >= 0 ? '+' : ''}
+                  ${(holdingsCalculations.unrealizedGain || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
-                <div className={`text-xs font-mono mt-2 font-medium ${holdingsCalculations.unrealizedGainPct >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                  {holdingsCalculations.unrealizedGainPct >= 0 ? '+' : ''}{holdingsCalculations.unrealizedGainPct.toFixed(2)}% on open positions
+                <div className={`text-xs font-mono mt-2 font-medium ${(holdingsCalculations.unrealizedGainPct || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  {(holdingsCalculations.unrealizedGainPct || 0) >= 0 ? '+' : ''}{(holdingsCalculations.unrealizedGainPct || 0).toFixed(2)}% on open positions
                 </div>
               </div>
 
               <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
                 <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600 mb-1">Return on Investment</div>
                 {(() => {
-                  const roi = ((totalEquity - 1000000) / 1000000) * 100;
+                  const roi = (((totalEquity || 1000000) - 1000000) / 1000000) * 100;
                   return (
                     <>
                       <div className={`text-2xl font-mono font-bold ${roi >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
@@ -594,7 +583,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Holdings & Allocation Breakdown */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
                 <div className="flex justify-between items-center mb-5">
@@ -624,10 +612,10 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-mono">
-                      {holdingsCalculations.items.length === 0 ? (
+                      {(!holdingsCalculations.items || holdingsCalculations.items.length === 0) ? (
                         <tr>
                           <td colSpan={7} className="py-8 text-center text-slate-500 font-sans">
-                            No open positions in {activePortfolio?.name}. Use Trade / Markets to execute paper orders.
+                            No open positions in {activePortfolio?.name || 'this desk'}. Use Trade / Markets to execute paper orders.
                           </td>
                         </tr>
                       ) : (
@@ -635,11 +623,11 @@ export default function App() {
                           <tr key={pos.id || pos.symbol} className="hover:bg-slate-50 transition">
                             <td className="py-3.5 font-bold text-slate-950">{pos.symbol}</td>
                             <td className="py-3.5 text-right text-slate-800">{pos.shares.toLocaleString()}</td>
-                            <td className="py-3.5 text-right text-slate-800">${pos.avgPrice.toFixed(2)}</td>
-                            <td className="py-3.5 text-right font-medium text-slate-950">${pos.livePrice.toFixed(2)}</td>
-                            <td className="py-3.5 text-right font-bold text-slate-950">${pos.marketValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                            <td className={`py-3.5 text-right font-medium ${pos.gain >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                              {pos.gain >= 0 ? '+' : ''}${pos.gain.toFixed(2)} ({pos.gainPct.toFixed(2)}%)
+                            <td className="py-3.5 text-right text-slate-800">${(pos.avgPrice || 0).toFixed(2)}</td>
+                            <td className="py-3.5 text-right font-medium text-slate-950">${(pos.livePrice || 0).toFixed(2)}</td>
+                            <td className="py-3.5 text-right font-bold text-slate-950">${(pos.marketValue || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                            <td className={`py-3.5 text-right font-medium ${(pos.gain || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                              {(pos.gain || 0) >= 0 ? '+' : ''}${(pos.gain || 0).toFixed(2)} ({(pos.gainPct || 0).toFixed(2)}%)
                             </td>
                             <td className="py-3.5 text-right">
                               <button
@@ -660,7 +648,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Allocation Donut */}
               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm flex flex-col justify-between">
                 <div>
                   <h3 className="text-base font-semibold text-slate-950">Asset Allocation</h3>
@@ -714,9 +701,7 @@ export default function App() {
         {/* TRADE / MARKETS TAB */}
         {activeTab === 'markets' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Chart and Asset Information */}
             <div className="lg:col-span-2 space-y-6">
-              {/* Asset Header and Search Bar */}
               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
                 <div className="relative mb-5">
                   <div className="flex items-center bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
@@ -779,7 +764,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Timeframe Controls */}
                 <div className="flex justify-between items-center mt-5 mb-3">
                   <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600">Yahoo Historical Candlesticks</div>
                   <div className="flex gap-1 bg-slate-100 p-0.5 rounded-md">
@@ -797,7 +781,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Recharts Area Chart */}
                 <div className="h-72 w-full">
                   {marketLoading ? (
                     <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2 text-xs font-mono">
@@ -832,13 +815,11 @@ export default function App() {
               </div>
             </div>
 
-            {/* Institutional Order Ticket */}
             <div className="space-y-6">
               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
                 <h3 className="text-base font-semibold text-slate-950 mb-1">Execution Ticket</h3>
                 <p className="text-xs text-slate-600 mb-5">Zero-slippage simulated market execution</p>
 
-                {/* Buy / Sell Toggle */}
                 <div className="grid grid-cols-2 bg-slate-100 p-1 rounded-lg mb-5">
                   <button
                     onClick={() => setOrderType('BUY')}
@@ -973,7 +954,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Selector Tabs */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {portfolios.map(p => {
                   const isActive = p.id === activePortfolioId;
@@ -987,7 +967,7 @@ export default function App() {
                     >
                       <div className="text-xs font-semibold text-slate-950 mb-1">{p.name}</div>
                       <div className="text-lg font-mono font-bold text-slate-950">
-                        ${p.cashBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        ${(p.cashBalance || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </div>
                       <div className="text-[11px] text-slate-600 font-mono mt-2">
                         {p.positions?.length || 0} Open Positions
@@ -998,7 +978,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Transaction Ledger */}
             <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
               <h3 className="text-base font-semibold text-slate-950 mb-1">Execution Audit Trail</h3>
               <p className="text-xs text-slate-600 mb-5">Permanent trade ledger recorded to PostgreSQL</p>
@@ -1035,8 +1014,8 @@ export default function App() {
                             </span>
                           </td>
                           <td className="py-3 text-right">{tx.shares.toLocaleString()}</td>
-                          <td className="py-3 text-right">${tx.price.toFixed(2)}</td>
-                          <td className="py-3 text-right font-bold">${tx.totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="py-3 text-right">${(tx.price || 0).toFixed(2)}</td>
+                          <td className="py-3 text-right font-bold">${(tx.totalValue || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         </tr>
                       ))
                     )}
@@ -1080,10 +1059,10 @@ export default function App() {
                         <td className="py-3.5 font-semibold text-slate-950 font-sans">{entry.username}</td>
                         <td className="py-3.5 text-slate-600">{entry.portfolioName}</td>
                         <td className="py-3.5 text-right font-bold text-slate-950">
-                          ${entry.totalEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          ${(entry.totalEquity || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </td>
-                        <td className={`py-3.5 text-right font-semibold ${entry.roi >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                          {entry.roi >= 0 ? '+' : ''}{entry.roi.toFixed(2)}%
+                        <td className={`py-3.5 text-right font-semibold ${(entry.roi || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                          {(entry.roi || 0) >= 0 ? '+' : ''}{(entry.roi || 0).toFixed(2)}%
                         </td>
                         <td className="py-3.5 text-right text-slate-600">{entry.assetsCount}</td>
                         <td className="py-3.5 text-right text-slate-500">{entry.lastActive}</td>
