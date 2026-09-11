@@ -318,7 +318,6 @@ export default function App() {
       try {
         const positions = selectedDashboardPortfolio.positions || [];
         if (positions.length === 0) {
-          // If no positions, return steady cash line
           const dummyPoints = Array.from({ length: 30 }, (_, i) => ({
             time: `Day ${i + 1}`,
             value: selectedDashboardPortfolio.cashBalance || 1000000
@@ -328,7 +327,6 @@ export default function App() {
           return;
         }
 
-        // Fetch chart data for all held symbols in parallel
         const chartPromises = positions.map(pos =>
           fetch(`${API_BASE}/markets/chart/${encodeURIComponent(pos.symbol)}?range=${portfolioTimeframe}`)
             .then(res => res.json())
@@ -337,7 +335,6 @@ export default function App() {
 
         const chartsResults = await Promise.all(chartPromises);
         
-        // Map symbol to its chart points array
         const symbolCharts = {};
         positions.forEach((pos, idx) => {
           const data = chartsResults[idx];
@@ -346,7 +343,6 @@ export default function App() {
           }
         });
 
-        // Use the first available position's timeline as base timestamps
         const baseSymbol = positions[0].symbol;
         const basePoints = symbolCharts[baseSymbol] || [];
 
@@ -529,7 +525,7 @@ export default function App() {
           price: quote.price,
           currency: curr,
           totalDKK: totalDKK,
-          totalValue: totalNative
+          totalValue: totalDKK // FIX: Pass totalDKK as totalValue so backend PostgreSQL correctly debits/credits cash balance in DKK
         })
       });
       const data = await res.json();
