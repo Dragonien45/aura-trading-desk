@@ -27,24 +27,22 @@ import {
   ArrowRight
 } from 'lucide-react';
 
-const API_BASE = typeof window !== 'undefined' && window.location.origin.includes('vercel.app') 
-  ? '/api' 
-  : 'https://aura-trading-desk-ten.vercel.app/api';
+const API_BASE = '/api';
 
 const QUICK_ASSETS = [
-  { symbol: 'AAPL', label: 'Apple', basePrice: 224.23, currency: 'USD' },
-  { symbol: 'NVDA', label: 'NVIDIA', basePrice: 119.85, currency: 'USD' },
-  { symbol: 'TSLA', label: 'Tesla', basePrice: 245.10, currency: 'USD' },
-  { symbol: 'XPEV', label: 'XPENG', basePrice: 19.34, currency: 'USD' },
-  { symbol: 'VWS.CO', label: 'Vestas', basePrice: 154.20, currency: 'DKK' },
-  { symbol: 'SPY', label: 'S&P 500', basePrice: 561.40, currency: 'USD' },
-  { symbol: 'BTC-USD', label: 'Bitcoin', basePrice: 62450.00, currency: 'USD' },
-  { symbol: 'ETH-USD', label: 'Ethereum', basePrice: 2480.00, currency: 'USD' }
+  { symbol: 'AAPL', label: 'Apple' },
+  { symbol: 'NVDA', label: 'NVIDIA' },
+  { symbol: 'TSLA', label: 'Tesla' },
+  { symbol: 'XPEV', label: 'XPENG' },
+  { symbol: 'VWS.CO', label: 'Vestas' },
+  { symbol: 'SPY', label: 'S&P 500' },
+  { symbol: 'BTC-USD', label: 'Bitcoin' },
+  { symbol: 'ETH-USD', label: 'Ethereum' }
 ];
 
 const TIMEFRAMES = ['1D', '1W', '1M', '1Y'];
 
-// Institutional FX Conversion Rates to Danish Kroner (DKK)
+// FX Conversion Rates to DKK for portfolio overview translation
 const FX_RATES_TO_DKK = {
   'DKK': 1.0,
   'USD': 6.85,
@@ -75,62 +73,39 @@ export default function App() {
   const [user, setUser] = useState(() => {
     try {
       const saved = localStorage.getItem('aura_session');
-      return saved ? JSON.parse(saved) : { id: 'usr_inst_1', username: 'Karlos' };
+      return saved ? JSON.parse(saved) : null;
     } catch {
-      return { id: 'usr_inst_1', username: 'Karlos' };
+      return null;
     }
   });
 
   const [authMode, setAuthMode] = useState('login');
-  const [authUsername, setAuthUsername] = useState('Karlos');
-  const [authPassword, setAuthPassword] = useState('institutional2026');
+  const [authUsername, setAuthUsername] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
 
-  const [apiStatus, setApiStatus] = useState('VERCEL SYNCING...');
-  const [isBackendConnected, setIsBackendConnected] = useState(false);
+  const [apiStatus, setApiStatus] = useState('CONNECTING...');
   const [activeTab, setActiveTab] = useState('dashboard');
-  
-  const [portfolios, setPortfolios] = useState([
-    {
-      id: 'port_prime_1',
-      name: 'Global Alpha Desk',
-      cashBalance: 1000000.00, // 1.000.000,00 kr. starting capital
-      positions: [],
-      transactions: []
-    }
-  ]);
-  const [activePortfolioId, setActivePortfolioId] = useState('port_prime_1');
+  const [portfolios, setPortfolios] = useState([]);
+  const [activePortfolioId, setActivePortfolioId] = useState(null);
   const [portfolioLoading, setPortfolioLoading] = useState(false);
 
-  // Search & quote state
+  // Global search & live market state
   const [selectedSymbol, setSelectedSymbol] = useState('AAPL');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [searchFocused, setSearchFocused] = useState(false);
   const [searchSearching, setSearchSearching] = useState(false);
   const [activeTimeframe, setActiveTimeframe] = useState('1M');
-  
-  const [quote, setQuote] = useState({
-    symbol: 'AAPL',
-    name: 'Apple Inc.',
-    price: 224.23,
-    change: 3.45,
-    changePercent: 1.56,
-    currency: 'USD',
-    isLive: true,
-    marketState: 'REGULAR',
-    exchangeName: 'NASDAQ'
-  });
+  const [quote, setQuote] = useState(null);
   const [chartData, setChartData] = useState([]);
   const [marketLoading, setMarketLoading] = useState(false);
-  const [heldLiveQuotes, setHeldLiveQuotes] = useState({
-    'AAPL': { price: 224.23, currency: 'USD' }
-  });
+  const [heldLiveQuotes, setHeldLiveQuotes] = useState({});
 
-  // Trading ticket state with dual-mode sizing
+  // Order ticket state with dual-mode sizing (Shares or Native Currency)
   const [orderType, setOrderType] = useState('BUY');
-  const [orderShares, setOrderShares] = useState('100');
+  const [orderShares, setOrderShares] = useState('');
   const [inputMode, setInputMode] = useState('shares'); // 'shares' | 'native'
   const [targetNativeAmount, setTargetNativeAmount] = useState('');
   const [orderStatus, setOrderStatus] = useState(null);
@@ -138,28 +113,13 @@ export default function App() {
 
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState('');
-  const [leaderboard, setLeaderboard] = useState([
-    { id: 'ld_1', username: 'Karlos', portfolioName: 'Global Alpha Desk', totalEquity: 1000000.00, roi: 0.00, assetsCount: 0, lastActive: 'Just now' }
-  ]);
+  const [leaderboard, setLeaderboard] = useState([]);
 
   const searchBoxRef = useRef(null);
 
-  // Active asset currency and FX rate to DKK
   const activeCurrency = quote?.currency || (selectedSymbol?.endsWith('.CO') ? 'DKK' : 'USD');
   const activeCurrencySymbol = activeCurrency === 'USD' ? '$' : activeCurrency === 'EUR' ? '€' : activeCurrency === 'GBP' ? '£' : 'kr.';
   const assetFxRate = FX_RATES_TO_DKK[activeCurrency] || 6.85;
-
-  // Compute timeframe-aware percentage change based on active chart scale (1D, 1W, 1M, 1Y)
-  const timeframeChangeCalc = useMemo(() => {
-    if (!chartData || chartData.length === 0) {
-      return { change: quote?.change || 0, changePercent: quote?.changePercent || 0 };
-    }
-    const startPrice = chartData[0].price;
-    const endPrice = chartData[chartData.length - 1].price;
-    const change = endPrice - startPrice;
-    const changePercent = startPrice > 0 ? (change / startPrice) * 100 : 0;
-    return { change, changePercent };
-  }, [chartData, quote]);
 
   const handleSharesChange = (val) => {
     setOrderShares(val);
@@ -195,26 +155,13 @@ export default function App() {
       const res = await fetch(`${API_BASE}/health`);
       const data = await res.json();
       if (data && data.status === 'ok') {
-        setApiStatus(data.database === 'postgresql' ? 'LIVE (POSTGRESQL)' : 'LIVE (VERCEL)');
-        setIsBackendConnected(true);
+        setApiStatus(data.database === 'postgresql' ? 'ONLINE (POSTGRESQL)' : 'ONLINE (IN-MEMORY)');
       } else {
         setApiStatus('OFFLINE');
-        setIsBackendConnected(false);
       }
     } catch {
-      setApiStatus('SANDBOX SIMULATION ACTIVE');
-      setIsBackendConnected(false);
+      setApiStatus('OFFLINE (UNREACHABLE)');
     }
-  };
-
-  const fetchLeaderboard = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/leaderboard`);
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data) && data.length > 0) setLeaderboard(data);
-      }
-    } catch (e) {}
   };
 
   useEffect(() => {
@@ -223,7 +170,7 @@ export default function App() {
     const interval = setInterval(() => {
       checkHealth();
       fetchLeaderboard();
-    }, 25000);
+    }, 30000);
     return () => clearInterval(interval);
   }, []);
 
@@ -233,22 +180,28 @@ export default function App() {
     setPortfolioLoading(true);
     try {
       const res = await fetch(`${API_BASE}/portfolios/${uId}`);
-      if (res.ok) {
-        const portData = await res.json();
-        if (Array.isArray(portData) && portData.length > 0) {
-          setPortfolios(portData);
+      if (!res.ok) throw new Error('Failed to load portfolios');
+      const portData = await res.json();
+      if (Array.isArray(portData)) {
+        setPortfolios(portData);
+        if (portData.length > 0) {
           setActivePortfolioId(prev => (prev && portData.some(p => p.id === prev) ? prev : portData[0].id));
         }
       }
-    } catch (err) {} finally {
+    } catch (err) {
+      console.error('Portfolio refresh error:', err);
+    } finally {
       setPortfolioLoading(false);
     }
   };
 
   useEffect(() => {
-    if (user?.id) refreshUserData(user.id);
+    if (user?.id) {
+      refreshUserData(user.id);
+    }
   }, [user]);
 
+  // Live Debounced Yahoo Search via Backend API
   useEffect(() => {
     if (!searchQuery || searchQuery.trim().length < 2) {
       setSearchResults([]);
@@ -262,7 +215,9 @@ export default function App() {
           const data = await res.json();
           setSearchResults(Array.isArray(data) ? data : []);
         }
-      } catch (err) {} finally {
+      } catch (err) {
+        console.error('Search error:', err);
+      } finally {
         setSearchSearching(false);
       }
     }, 280);
@@ -290,25 +245,29 @@ export default function App() {
   const fetchMarketData = async (symbol, range = activeTimeframe) => {
     setMarketLoading(true);
     try {
-      const [qRes, cRes] = await Promise.all([
+      const [quoteRes, chartRes] = await Promise.all([
         fetch(`${API_BASE}/markets/quote/${encodeURIComponent(symbol)}`),
         fetch(`${API_BASE}/markets/chart/${encodeURIComponent(symbol)}?range=${range}`)
       ]);
-      if (qRes.ok) {
-        const qData = await qRes.json();
+      if (quoteRes.ok) {
+        const qData = await quoteRes.json();
         setQuote(qData);
       }
-      if (cRes.ok) {
-        const cData = await cRes.json();
-        if (Array.isArray(cData)) setChartData(cData);
+      if (chartRes.ok) {
+        const cData = await chartRes.json();
+        setChartData(Array.isArray(cData) ? cData : []);
       }
-    } catch (err) {} finally {
+    } catch (err) {
+      console.error('Market fetch error:', err);
+    } finally {
       setMarketLoading(false);
     }
   };
 
   useEffect(() => {
-    if (user) fetchMarketData(selectedSymbol, activeTimeframe);
+    if (user) {
+      fetchMarketData(selectedSymbol, activeTimeframe);
+    }
   }, [selectedSymbol, activeTimeframe, user]);
 
   const activePortfolio = useMemo(() => {
@@ -316,8 +275,25 @@ export default function App() {
     return portfolios.find(p => p.id === activePortfolioId) || portfolios[0];
   }, [portfolios, activePortfolioId]);
 
+  // Batch load live prices for held assets from backend scraper
+  useEffect(() => {
+    const heldSymbols = (activePortfolio?.positions || []).map(p => p.symbol).filter(Boolean);
+    if (heldSymbols.length === 0) return;
+
+    fetch(`${API_BASE}/markets/quotes?symbols=${encodeURIComponent(heldSymbols.join(','))}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data && typeof data === 'object') {
+          setHeldLiveQuotes(data);
+        }
+      })
+      .catch(() => {});
+  }, [activePortfolio]);
+
   const holdingsCalculations = useMemo(() => {
-    if (!activePortfolio) return { totalMarketValueDKK: 0, unrealizedGainDKK: 0, unrealizedGainPct: 0, items: [] };
+    if (!activePortfolio) {
+      return { totalMarketValueDKK: 0, unrealizedGainDKK: 0, unrealizedGainPct: 0, items: [] };
+    }
     let totalMarketValueDKK = 0;
     let totalCostBasisDKK = 0;
 
@@ -358,6 +334,30 @@ export default function App() {
 
   const totalEquity = (activePortfolio?.cashBalance || 0) + (holdingsCalculations.totalMarketValueDKK || 0);
 
+  // Timeframe-aware return calculation for the selected chart
+  const timeframeReturn = useMemo(() => {
+    if (!chartData || chartData.length < 2) {
+      return { change: quote?.change || 0, changePercent: quote?.changePercent || 0 };
+    }
+    const firstPrice = chartData[0].price;
+    const lastPrice = chartData[chartData.length - 1].price;
+    const change = lastPrice - firstPrice;
+    const changePercent = firstPrice > 0 ? (change / firstPrice) * 100 : 0;
+    return { change, changePercent };
+  }, [chartData, quote]);
+
+  const fetchLeaderboard = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/leaderboard`);
+      if (res.ok) {
+        const data = await res.json();
+        setLeaderboard(Array.isArray(data) ? data : []);
+      }
+    } catch (e) {
+      console.error('Leaderboard error:', e);
+    }
+  };
+
   const handleAuth = async (e) => {
     e.preventDefault();
     setAuthLoading(true);
@@ -370,14 +370,18 @@ export default function App() {
         body: JSON.stringify({ username: authUsername, accessCode: authPassword })
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Auth failed');
-      const resolved = data.user || data;
-      const session = { id: resolved.id || 'usr_1', username: resolved.username || authUsername };
-      setUser(session);
-      localStorage.setItem('aura_session', JSON.stringify(session));
-      await refreshUserData(session.id);
+      if (!res.ok) throw new Error(data?.error || 'Authentication failed');
+
+      const resolvedUser = (data && data.user) ? data.user : data;
+      if (!resolvedUser || !resolvedUser.id) throw new Error('Database returned invalid profile format');
+
+      const sessionData = { id: resolvedUser.id, username: resolvedUser.username };
+      setUser(sessionData);
+      localStorage.setItem('aura_session', JSON.stringify(sessionData));
+      await refreshUserData(sessionData.id);
+      await fetchLeaderboard();
     } catch (err) {
-      setAuthError(err.message);
+      setAuthError(err.message || 'Authentication error');
     } finally {
       setAuthLoading(false);
     }
@@ -386,6 +390,7 @@ export default function App() {
   const handleLogout = () => {
     setUser(null);
     localStorage.removeItem('aura_session');
+    setPortfolios([]);
   };
 
   const handleTrade = async () => {
@@ -408,20 +413,10 @@ export default function App() {
       return;
     }
 
-    const existingPos = activePortfolio.positions.find(p => p.symbol === quote.symbol);
-    if (orderType === 'SELL' && (!existingPos || existingPos.shares < qty)) {
-      setOrderStatus({ 
-        type: 'error', 
-        message: `Ikke nok aktier til salg. Du har aktuelt ${existingPos ? existingPos.shares : 0} aktier.` 
-      });
-      return;
-    }
-
     setTradeLoading(true);
     setOrderStatus(null);
-
     try {
-      await fetch(`${API_BASE}/portfolios/trade`, {
+      const res = await fetch(`${API_BASE}/portfolios/trade`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -435,90 +430,58 @@ export default function App() {
           totalValue: totalNative
         })
       });
-    } catch (err) {}
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Order execution rejected');
 
-    setPortfolios(prev => prev.map(port => {
-      if (port.id !== activePortfolio.id) return port;
-      let newCash = orderType === 'BUY' ? port.cashBalance - totalDKK : port.cashBalance + totalDKK;
-      let newPositions = [...port.positions];
-      const posIdx = newPositions.findIndex(p => p.symbol === quote.symbol);
-
-      if (orderType === 'BUY') {
-        if (posIdx >= 0) {
-          const prevPos = newPositions[posIdx];
-          const combinedShares = prevPos.shares + qty;
-          const newAvgPrice = ((prevPos.shares * prevPos.avgPrice) + totalNative) / combinedShares;
-          newPositions[posIdx] = { ...prevPos, shares: combinedShares, avgPrice: newAvgPrice, currency: curr };
-        } else {
-          newPositions.push({ id: 'pos_' + Date.now(), symbol: quote.symbol, shares: qty, avgPrice: quote.price, currency: curr });
-        }
-      } else {
-        if (posIdx >= 0) {
-          const prevPos = newPositions[posIdx];
-          const remaining = prevPos.shares - qty;
-          if (remaining <= 0.0001) newPositions.splice(posIdx, 1);
-          else newPositions[posIdx] = { ...prevPos, shares: remaining };
-        }
-      }
-
-      const newTx = {
-        id: 'tx_' + Date.now(),
-        timestamp: new Date().toISOString(),
-        symbol: quote.symbol,
-        type: orderType,
-        shares: qty,
-        price: quote.price,
-        currency: curr,
-        totalNative: totalNative,
-        totalDKK: totalDKK
-      };
-
-      return {
-        ...port,
-        cashBalance: newCash,
-        positions: newPositions,
-        transactions: [newTx, ...(port.transactions || [])]
-      };
-    }));
-
-    setOrderStatus({
-      type: 'success',
-      message: `Udført ${orderType} ${qty.toLocaleString()} ${quote.symbol} @ ${formatNativePrice(quote.price, curr)} (Afregnet: ${formatDKK(totalDKK)})`
-    });
-    setOrderShares('');
-    setTargetNativeAmount('');
-    setTradeLoading(false);
+      setOrderStatus({
+        type: 'success',
+        message: `Udført ${orderType} ${qty.toLocaleString()} ${quote.symbol} @ ${formatNativePrice(quote.price, curr)} (Afregnet: ${formatDKK(totalDKK)})`
+      });
+      setOrderShares('');
+      setTargetNativeAmount('');
+      await refreshUserData(user.id);
+      await fetchLeaderboard();
+    } catch (err) {
+      setOrderStatus({ type: 'error', message: err.message });
+    } finally {
+      setTradeLoading(false);
+    }
   };
 
   const handleReset = async () => {
     if (!activePortfolio?.id) return;
     if (!window.confirm('Nulstil dette handelsbord? Alle positioner vil blive likvideret og saldoen gendannet til 1.000.000,00 kr.')) return;
     try {
-      await fetch(`${API_BASE}/portfolios/reset`, {
+      const res = await fetch(`${API_BASE}/portfolios/reset`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ portfolioId: activePortfolio.id })
       });
-    } catch (e) {}
-
-    setPortfolios(prev => prev.map(p => {
-      if (p.id !== activePortfolio.id) return p;
-      return { ...p, cashBalance: 1000000.00, positions: [], transactions: [] };
-    }));
+      if (res.ok) {
+        await refreshUserData(user.id);
+        await fetchLeaderboard();
+      }
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   const handleRename = async () => {
     if (!activePortfolio?.id || !newName.trim()) return;
     try {
-      await fetch(`${API_BASE}/portfolios/rename`, {
+      const res = await fetch(`${API_BASE}/portfolios/rename`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ portfolioId: activePortfolio.id, name: newName.trim() })
       });
-    } catch (e) {}
-    setPortfolios(prev => prev.map(p => p.id === activePortfolio.id ? { ...p, name: newName.trim() } : p));
-    setRenaming(false);
-    setNewName('');
+      if (res.ok) {
+        setRenaming(false);
+        setNewName('');
+        await refreshUserData(user.id);
+      }
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   const allocationData = useMemo(() => {
@@ -526,8 +489,13 @@ export default function App() {
     const cash = activePortfolio.cashBalance || 0;
     const data = [{ name: 'Kontantbeholdning (kr.)', value: cash, color: '#0F172A' }];
     const colors = ['#2563EB', '#0D9488', '#F59E0B', '#8B5CF6', '#EC4899', '#10B981', '#6366F1'];
+
     (holdingsCalculations.items || []).forEach((pos, idx) => {
-      data.push({ name: pos.symbol, value: pos.marketValDKK, color: colors[idx % colors.length] });
+      data.push({
+        name: pos.symbol,
+        value: pos.marketValDKK,
+        color: colors[idx % colors.length]
+      });
     });
     return data;
   }, [activePortfolio, holdingsCalculations]);
@@ -537,15 +505,15 @@ export default function App() {
       <div className="min-h-screen bg-[#FBFBF9] flex flex-col justify-between p-6">
         <header className="flex justify-between items-center max-w-6xl mx-auto w-full">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-slate-950 rounded flex items-center justify-center text-white font-bold text-sm shadow-sm">
+            <div className="w-8 h-8 bg-slate-950 rounded flex items-center justify-center text-white font-bold tracking-wider text-sm shadow-sm">
               A
             </div>
             <span className="text-slate-900 font-semibold tracking-tight text-base">AURA Institutional Desk</span>
           </div>
           <div className="flex items-center gap-2 text-xs font-mono">
             <Server className="w-3.5 h-3.5 text-slate-400" />
-            <span className={isBackendConnected ? 'text-emerald-700 font-medium' : 'text-amber-700'}>
-              {apiStatus}
+            <span className={apiStatus.includes('ONLINE') ? 'text-emerald-700 font-medium' : 'text-amber-700'}>
+              API: {apiStatus}
             </span>
           </div>
         </header>
@@ -558,7 +526,7 @@ export default function App() {
           </div>
           <h2 className="text-xl font-semibold text-slate-900 text-center">Institutional Terminal Access</h2>
           <p className="text-xs text-slate-500 text-center mt-1 mb-6">
-            Global market desk integrated with Yahoo Finance &bull; Base: DKK (kr.)
+            Global market desk integrated with Yahoo Finance scraping backend.
           </p>
 
           <div className="grid grid-cols-2 bg-slate-100 p-1 rounded-lg mb-6">
@@ -631,6 +599,15 @@ export default function App() {
         <footer className="text-center text-[11px] font-mono text-slate-400">
           AURA Institutional Desk &bull; Base Currency: DKK
         </footer>
+      </div>
+    );
+  }
+
+  if (portfolios.length === 0 && portfolioLoading) {
+    return (
+      <div className="min-h-screen bg-[#FBFBF9] flex flex-col items-center justify-center gap-3 font-mono text-xs text-slate-600">
+        <RefreshCw className="w-6 h-6 animate-spin text-slate-900" />
+        <span>Loading institutional desks from PostgreSQL...</span>
       </div>
     );
   }
@@ -966,21 +943,21 @@ export default function App() {
 
                   <div className="text-right font-mono">
                     <div className="text-3xl font-bold text-slate-950">
-                      {formatNativePrice(quote?.price, activeCurrency)}
+                      {quote?.price ? formatNativePrice(quote.price, activeCurrency) : 'Indlæser...'}
                     </div>
                     <div className="text-xs font-mono text-slate-500">
-                      ≈ {formatDKK((quote?.price || 0) * assetFxRate)}
+                      {quote?.price ? `≈ ${formatDKK(quote.price * assetFxRate)}` : ''}
                     </div>
                     <div className={`text-xs font-semibold flex items-center justify-end gap-1 mt-1 ${
-                      (timeframeChangeCalc.change || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                      timeframeReturn.change >= 0 ? 'text-emerald-700' : 'text-rose-700'
                     }`}>
-                      {(timeframeChangeCalc.change || 0) >= 0 ? '+' : ''}{timeframeChangeCalc.change?.toFixed(2)} ({(timeframeChangeCalc.changePercent || 0) >= 0 ? '+' : ''}{timeframeChangeCalc.changePercent?.toFixed(2)}%)
+                      {timeframeReturn.change >= 0 ? '+' : ''}{timeframeReturn.change.toFixed(2)} ({timeframeReturn.changePercent >= 0 ? '+' : ''}{timeframeReturn.changePercent.toFixed(2)}%)
                     </div>
                   </div>
                 </div>
 
                 <div className="flex justify-between items-center mt-5 mb-3">
-                  <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600">Historiske Graffer</div>
+                  <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600">Historiske Graffer ({activeTimeframe})</div>
                   <div className="flex gap-1 bg-slate-100 p-0.5 rounded-md">
                     {TIMEFRAMES.map(tf => (
                       <button
@@ -1000,7 +977,7 @@ export default function App() {
                   {marketLoading ? (
                     <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2 text-xs font-mono">
                       <RefreshCw className="w-5 h-5 animate-spin" />
-                      Henter Yahoo Finance data...
+                      Henter Yahoo Finance data fra backend...
                     </div>
                   ) : chartData.length > 0 ? (
                     <ResponsiveContainer width="100%" height="100%">
@@ -1023,7 +1000,7 @@ export default function App() {
                     </ResponsiveContainer>
                   ) : (
                     <div className="h-full flex items-center justify-center text-slate-400 text-xs font-mono">
-                      Ingen data tilgængelig
+                      Ingen data modtaget fra Yahoo Finance scraper
                     </div>
                   )}
                 </div>
@@ -1071,7 +1048,7 @@ export default function App() {
                     <div className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-950 flex justify-between items-center">
                       <span>{quote?.symbol || selectedSymbol}</span>
                       <span className="font-normal text-slate-700">
-                        {quote?.price ? formatNativePrice(quote.price, activeCurrency) : '0.00'}
+                        {quote?.price ? formatNativePrice(quote.price, activeCurrency) : 'Indlæser...'}
                       </span>
                     </div>
                   </div>
