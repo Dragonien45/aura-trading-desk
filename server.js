@@ -75,113 +75,164 @@ initDb();
 
 const quoteCache = {};
 
-function fetchYahooQuote(symbol) {
+// Live Search via Yahoo Finance Search Autocomplete
+function searchYahoo(query) {
   return new Promise((resolve) => {
-    const cached = quoteCache[symbol];
-    if (cached && Date.now() - cached.timestamp < 3000) {
-      return resolve(cached.data);
-    }
-
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d`;
+    if (!query || !query.trim()) return resolve([]);
+    const cleanQuery = encodeURIComponent(query.trim());
+    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${cleanQuery}&quotesCount=10&newsCount=0&listsCount=0&enableFuzzyQuery=false`;
     const options = {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'application/json'
       }
     };
 
     const req = https.get(url, options, (res) => {
       let data = '';
-      res.on('data', (chunk) => { data += chunk; });
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          const quotes = parsed.quotes || [];
+          const results = quotes
+            .filter(q => q.symbol && (q.quoteType === 'EQUITY' || q.quoteType === 'ETF' || q.quoteType === 'CRYPTOCURRENCY' || q.quoteType === 'CURRENCY' || q.quoteType === 'INDEX'))
+            .map(q => ({
+              symbol: q.symbol.toUpperCase(),
+              name: q.shortname || q.longname || q.symbol,
+              exchange: q.exchange || q.exchDisp || 'Global',
+              type: q.quoteType || q.typeDisp || 'Asset'
+            }));
+          resolve(results);
+        } catch {
+          resolve([]);
+        }
+      });
+    });
+
+    req.on('error', () => resolve([]));
+    req.setTimeout(3500, () => {
+      req.destroy();
+      resolve([]);
+    });
+  });
+}
+
+// Global Quote Fetcher
+function fetchYahooQuote(symbol) {
+  return new Promise((resolve) => {
+    const clean = symbol.trim().toUpperCase();
+    const cached = quoteCache[clean];
+    if (cached && Date.now() - cached.timestamp < 3000) {
+      return resolve(cached.data);
+    }
+
+    const encodedSymbol = encodeURIComponent(clean);
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodedSymbol}?interval=15m&range=1d`;
+    const options = {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'application/json'
+      }
+    };
+
+    const req = https.get(url, options, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
           const meta = parsed.chart?.result?.[0]?.meta;
-          if (meta && typeof meta.regularMarketPrice === 'number') {
-            const currentPrice = meta.regularMarketPrice;
-            const prevClose = meta.chartPreviousClose || meta.previousClose || currentPrice;
-            const change = currentPrice - prevClose;
-            const changePercent = prevClose !== 0 ? (change / prevClose) * 100 : 0;
+          if (meta) {
+            const currentPrice = typeof meta.regularMarketPrice === 'number'
+              ? meta.regularMarketPrice
+              : (meta.chartPreviousClose || meta.previousClose || 0);
 
-            const isTrading = meta.currentTradingPeriod?.regular
-              ? Date.now() / 1000 >= meta.currentTradingPeriod.regular.start &&
-                Date.now() / 1000 <= meta.currentTradingPeriod.regular.end
-              : false;
+            if (currentPrice > 0) {
+              const prevClose = meta.chartPreviousClose || meta.previousClose || currentPrice;
+              const change = currentPrice - prevClose;
+              const changePercent = prevClose !== 0 ? (change / prevClose) * 100 : 0;
 
-            const result = {
-              symbol: symbol.toUpperCase(),
-              name: meta.shortName || meta.symbol || symbol,
-              price: currentPrice,
-              change: parseFloat(change.toFixed(2)),
-              changePercent: parseFloat(changePercent.toFixed(2)),
-              high: meta.regularMarketDayHigh || currentPrice,
-              low: meta.regularMarketDayLow || currentPrice,
-              volume: meta.regularMarketVolume || 0,
-              marketState: isTrading ? 'REGULAR' : 'CLOSED',
-              isLive: isTrading,
-              lastUpdated: new Date().toISOString()
-            };
-            quoteCache[symbol] = { timestamp: Date.now(), data: result };
-            return resolve(result);
+              const isTrading = meta.currentTradingPeriod?.regular
+                ? Date.now() / 1000 >= meta.currentTradingPeriod.regular.start &&
+                  Date.now() / 1000 <= meta.currentTradingPeriod.regular.end
+                : false;
+
+              const result = {
+                symbol: clean,
+                name: meta.shortName || meta.longName || meta.symbol || clean,
+                currency: meta.currency || (clean.endsWith('.CO') ? 'DKK' : 'USD'),
+                exchangeName: meta.exchangeName || meta.fullExchangeName || '',
+                price: parseFloat(currentPrice.toFixed(2)),
+                change: parseFloat(change.toFixed(2)),
+                changePercent: parseFloat(changePercent.toFixed(2)),
+                high: meta.regularMarketDayHigh || currentPrice,
+                low: meta.regularMarketDayLow || currentPrice,
+                volume: meta.regularMarketVolume || 0,
+                marketState: isTrading ? 'REGULAR' : 'CLOSED',
+                isLive: isTrading,
+                lastUpdated: new Date().toISOString()
+              };
+              quoteCache[clean] = { timestamp: Date.now(), data: result };
+              return resolve(result);
+            }
           }
         } catch {}
-        resolve(getFallbackQuote(symbol));
+        resolve(getFallbackQuote(clean));
       });
     });
 
-    req.on('error', () => resolve(getFallbackQuote(symbol)));
-    req.setTimeout(3500, () => {
+    req.on('error', () => resolve(getFallbackQuote(clean)));
+    req.setTimeout(4000, () => {
       req.destroy();
-      resolve(getFallbackQuote(symbol));
+      resolve(getFallbackQuote(clean));
     });
   });
 }
 
 function getFallbackQuote(symbol) {
+  const clean = symbol.toUpperCase();
   const fallbacks = {
-    'AAPL': { price: 232.40, name: 'Apple Inc.' },
-    'NVDA': { price: 128.50, name: 'NVIDIA Corporation' },
-    'MSFT': { price: 448.20, name: 'Microsoft Corporation' },
-    'TSLA': { price: 248.80, name: 'Tesla, Inc.' },
-    'SPY': { price: 562.10, name: 'SPDR S&P 500 ETF' },
-    'QQQ': { price: 489.30, name: 'Invesco QQQ Trust' },
-    'BTC-USD': { price: 61850.00, name: 'Bitcoin USD' },
-    'ETH-USD': { price: 2420.00, name: 'Ethereum USD' }
+    'AAPL': { price: 232.40, name: 'Apple Inc.', currency: 'USD' },
+    'NVDA': { price: 128.50, name: 'NVIDIA Corporation', currency: 'USD' },
+    'MSFT': { price: 448.20, name: 'Microsoft Corporation', currency: 'USD' },
+    'TSLA': { price: 248.80, name: 'Tesla, Inc.', currency: 'USD' },
+    'SPY': { price: 562.10, name: 'SPDR S&P 500 ETF', currency: 'USD' },
+    'QQQ': { price: 489.30, name: 'Invesco QQQ Trust', currency: 'USD' },
+    'BTC-USD': { price: 61850.00, name: 'Bitcoin USD', currency: 'USD' },
+    'ETH-USD': { price: 2420.00, name: 'Ethereum USD', currency: 'USD' },
+    'XPEV': { price: 19.40, name: 'XPeng Inc.', currency: 'USD' },
+    'VWS.CO': { price: 165.50, name: 'Vestas Wind Systems A/S', currency: 'DKK' }
   };
-  const base = fallbacks[symbol.toUpperCase()] || { price: 100.00, name: symbol.toUpperCase() };
+  const base = fallbacks[clean] || { price: 100.00, name: clean, currency: clean.endsWith('.CO') ? 'DKK' : 'USD' };
   return {
-    symbol: symbol.toUpperCase(),
+    symbol: clean,
     name: base.name,
+    currency: base.currency,
     price: base.price,
     change: 0.00,
     changePercent: 0.00,
     high: base.price * 1.01,
     low: base.price * 0.99,
-    volume: 1500000,
+    volume: 500000,
     marketState: 'CLOSED',
     isLive: false,
     lastUpdated: new Date().toISOString()
   };
 }
 
-function fetchYahooChart(symbol, range = '1M') {
+function executeChartQuery(symbol, interval, range) {
   return new Promise((resolve) => {
-    let interval = '1d';
-    let yRange = '1mo';
-    if (range === '1D') { interval = '5m'; yRange = '1d'; }
-    else if (range === '1W') { interval = '15m'; yRange = '5d'; }
-    else if (range === '1Y') { interval = '1wk'; yRange = '1y'; }
-
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${yRange}`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}`;
     const options = {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
       }
     };
 
     const req = https.get(url, options, (res) => {
       let data = '';
-      res.on('data', (c) => { data += c; });
+      res.on('data', c => { data += c; });
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
@@ -193,22 +244,37 @@ function fetchYahooChart(symbol, range = '1M') {
             if (quotes[i] !== null && quotes[i] !== undefined) {
               const d = new Date(timestamps[i] * 1000);
               history.push({
-                time: range === '1D'
+                time: range === '1d'
                   ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                   : d.toLocaleDateString([], { month: 'short', day: 'numeric' }),
                 price: parseFloat(quotes[i].toFixed(2))
               });
             }
           }
-          if (history.length > 0) return resolve(history);
-        } catch {}
-        resolve([]);
+          resolve(history);
+        } catch {
+          resolve([]);
+        }
       });
     });
 
     req.on('error', () => resolve([]));
     req.setTimeout(4000, () => { req.destroy(); resolve([]); });
   });
+}
+
+async function fetchYahooChart(symbol, range = '1M') {
+  let interval = '1d';
+  let yRange = '1mo';
+  if (range === '1D') { interval = '5m'; yRange = '1d'; }
+  else if (range === '1W') { interval = '15m'; yRange = '5d'; }
+  else if (range === '1Y') { interval = '1wk'; yRange = '1y'; }
+
+  let history = await executeChartQuery(symbol, interval, yRange);
+  if (history.length === 0 && range === '1D') {
+    history = await executeChartQuery(symbol, '15m', '5d');
+  }
+  return history;
 }
 
 const router = express.Router();
@@ -219,6 +285,34 @@ router.get('/health', async (req, res) => {
     database: pool ? 'postgresql' : 'in-memory-safe',
     timestamp: new Date().toISOString()
   });
+});
+
+router.get('/markets/search', async (req, res) => {
+  const query = req.query.q || '';
+  const results = await searchYahoo(query);
+  res.json(results);
+});
+
+router.get('/markets/quote/:symbol', async (req, res) => {
+  const quote = await fetchYahooQuote(req.params.symbol);
+  res.json(quote);
+});
+
+router.get('/markets/quotes', async (req, res) => {
+  const symbols = (req.query.symbols || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+  if (symbols.length === 0) return res.json({});
+  const quotes = {};
+  await Promise.all(
+    symbols.map(async (sym) => {
+      quotes[sym] = await fetchYahooQuote(sym);
+    })
+  );
+  res.json(quotes);
+});
+
+router.get('/markets/chart/:symbol', async (req, res) => {
+  const chart = await fetchYahooChart(req.params.symbol, req.query.range || '1M');
+  res.json(chart);
 });
 
 router.post('/auth/register', async (req, res) => {
@@ -258,7 +352,6 @@ router.post('/auth/register', async (req, res) => {
       }
     }
 
-    // Return both flat and nested keys to support all client formats
     res.status(201).json({
       id: userId,
       username: cleanUser,
@@ -493,16 +586,6 @@ router.post('/portfolios/rename', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-router.get('/markets/quote/:symbol', async (req, res) => {
-  const quote = await fetchYahooQuote(req.params.symbol);
-  res.json(quote);
-});
-
-router.get('/markets/chart/:symbol', async (req, res) => {
-  const chart = await fetchYahooChart(req.params.symbol, req.query.range || '1M');
-  res.json(chart);
 });
 
 router.get('/leaderboard', async (req, res) => {
