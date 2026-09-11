@@ -33,14 +33,14 @@ const API_BASE = typeof window !== 'undefined' && window.location.origin.include
   : 'https://aura-trading-desk-ten.vercel.app/api';
 
 const QUICK_ASSETS = [
-  { symbol: 'AAPL', label: 'Apple' },
-  { symbol: 'NVDA', label: 'NVIDIA' },
-  { symbol: 'TSLA', label: 'Tesla' },
-  { symbol: 'XPEV', label: 'XPENG' },
-  { symbol: 'VWS.CO', label: 'Vestas' },
-  { symbol: 'SPY', label: 'S&P 500' },
-  { symbol: 'BTC-USD', label: 'Bitcoin' },
-  { symbol: 'ETH-USD', label: 'Ethereum' }
+  { symbol: 'AAPL', label: 'Apple', basePrice: 224.23, currency: 'USD' },
+  { symbol: 'NVDA', label: 'NVIDIA', basePrice: 119.85, currency: 'USD' },
+  { symbol: 'TSLA', label: 'Tesla', basePrice: 245.10, currency: 'USD' },
+  { symbol: 'XPEV', label: 'XPENG', basePrice: 19.34, currency: 'USD' },
+  { symbol: 'VWS.CO', label: 'Vestas', basePrice: 154.20, currency: 'DKK' },
+  { symbol: 'SPY', label: 'S&P 500', basePrice: 561.40, currency: 'USD' },
+  { symbol: 'BTC-USD', label: 'Bitcoin', basePrice: 62450.00, currency: 'USD' },
+  { symbol: 'ETH-USD', label: 'Ethereum', basePrice: 2480.00, currency: 'USD' }
 ];
 
 const TIMEFRAMES = ['1D', '1W', '1M', '1Y'];
