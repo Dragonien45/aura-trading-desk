@@ -9,15 +9,7 @@ app.use(express.json());
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-// Persistent In-Memory Store
-globalThis.__AURA_DB = globalThis.__AURA_DB || {
-  users: [],
-  portfolios: [],
-  positions: [],
-  transactions: []
-};
-const memoryDb = globalThis.__AURA_DB;
-
+// FX Conversion Rates to Danish Kroner (DKK)
 const FX_RATES_TO_DKK = {
   'DKK': 1.0,
   'USD': 6.85,
@@ -27,7 +19,14 @@ const FX_RATES_TO_DKK = {
   'NOK': 0.64
 };
 
-// PostgreSQL Connection Pool
+globalThis.__AURA_DB = globalThis.__AURA_DB || {
+  users: [],
+  portfolios: [],
+  positions: [],
+  transactions: []
+};
+const memoryDb = globalThis.__AURA_DB;
+
 const dbUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL;
 let pool = null;
 
@@ -214,11 +213,60 @@ function fetchYahooQuote(symbol) {
             }
           }
         } catch {}
-        resolve({ symbol: clean, name: clean, currency: clean.endsWith('.CO') ? 'DKK' : 'USD', price: 100.00, change: 0, changePercent: 0, isLive: false });
+        resolve({ symbol: clean, name: clean, currency: clean.endsWith('.CO') ? 'DKK' : 'USD', price: 0, change: 0, changePercent: 0, isLive: false });
       });
     });
-    req.on('error', () => resolve({ symbol: clean, name: clean, currency: clean.endsWith('.CO') ? 'DKK' : 'USD', price: 100.00, change: 0, changePercent: 0, isLive: false }));
-    req.setTimeout(4500, () => { req.destroy(); resolve({ symbol: clean, name: clean, currency: clean.endsWith('.CO') ? 'DKK' : 'USD', price: 100.00, change: 0, changePercent: 0, isLive: false }); });
+    req.on('error', () => resolve({ symbol: clean, name: clean, currency: clean.endsWith('.CO') ? 'DKK' : 'USD', price: 0, change: 0, changePercent: 0, isLive: false }));
+    req.setTimeout(4500, () => { req.destroy(); resolve({ symbol: clean, name: clean, currency: clean.endsWith('.CO') ? 'DKK' : 'USD', price: 0, change: 0, changePercent: 0, isLive: false }); });
+    req.end();
+  });
+}
+
+function fetchYahooChart(symbol, range = '1M') {
+  return new Promise(async (resolve) => {
+    const clean = symbol.trim().toUpperCase();
+    const session = await getYahooSession();
+    let interval = '1d';
+    let yRange = '1mo';
+    if (range === '1D') { interval = '5m'; yRange = '1d'; }
+    else if (range === '1W') { interval = '15m'; yRange = '5d'; }
+    else if (range === '1Y') { interval = '1wk'; yRange = '1y'; }
+
+    let path = `/v8/finance/chart/${encodeURIComponent(clean)}?interval=${interval}&range=${yRange}`;
+    if (session.crumb) path += `&crumb=${encodeURIComponent(session.crumb)}`;
+
+    const headers = { 'User-Agent': USER_AGENT, 'Accept': 'application/json' };
+    if (session.cookie) headers['Cookie'] = session.cookie;
+
+    const req = https.request({ hostname: 'query2.finance.yahoo.com', path, method: 'GET', headers }, (res) => {
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          const result = parsed.chart?.result?.[0];
+          const timestamps = result?.timestamp || [];
+          const quotes = result?.indicators?.quote?.[0]?.close || [];
+          const history = [];
+
+          for (let i = 0; i < timestamps.length; i++) {
+            if (quotes[i] !== null && quotes[i] !== undefined) {
+              const d = new Date(timestamps[i] * 1000);
+              history.push({
+                time: range === '1D'
+                  ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                  : d.toLocaleDateString([], { month: 'short', day: 'numeric' }),
+                price: parseFloat(quotes[i].toFixed(2))
+              });
+            }
+          }
+          if (history.length > 0) return resolve(history);
+        } catch {}
+        resolve([]);
+      });
+    });
+    req.on('error', () => resolve([]));
+    req.setTimeout(4500, () => { req.destroy(); resolve([]); });
     req.end();
   });
 }
@@ -245,8 +293,8 @@ router.get('/markets/quotes', async (req, res) => {
 });
 
 router.get('/markets/chart/:symbol', async (req, res) => {
-  // Simple chart stub or proxy
-  res.json([]);
+  const data = await fetchYahooChart(req.params.symbol, req.query.range || '1M');
+  res.json(data);
 });
 
 router.post('/auth/login', async (req, res) => {
@@ -304,7 +352,7 @@ router.get('/portfolios/:userId', async (req, res) => {
     } else {
       ports = memoryDb.portfolios.filter(p => p.user_id === userId);
       const portIds = ports.map(p => p.id);
-      positions = memoryDb.positions.filter(p => portIds.includes(p.portfolio_id));
+      positions = memoryDb.positions.filter(pos => portIds.includes(pos.portfolio_id));
       txs = memoryDb.transactions.filter(t => portIds.includes(t.portfolio_id));
     }
 
@@ -344,7 +392,7 @@ router.post('/portfolios/trade', async (req, res) => {
     const curr = currency || (upperSym.endsWith('.CO') ? 'DKK' : 'USD');
     const fxRate = FX_RATES_TO_DKK[curr] || 6.85;
 
-    // Use totalDKK from frontend if provided, otherwise calculate it securely on the server
+    // Use totalDKK from frontend if provided, otherwise compute securely with FX rate
     const costDKK = totalDKK !== undefined ? parseFloat(totalDKK) : (qty * execPrice * fxRate);
 
     if (pool) {
@@ -358,13 +406,13 @@ router.post('/portfolios/trade', async (req, res) => {
 
       if (type === 'BUY') {
         if (cash < costDKK) return res.status(400).json({ error: 'Insufficient DKK cash reserves' });
-        cash -= costDKK; // Deducts the exact converted Kroner amount
+        cash -= costDKK; // Correctly deducts full converted Kroner amount
         if (pos) {
           const oldShares = parseFloat(pos.shares);
           const oldAvg = parseFloat(pos.avg_price);
           const newShares = oldShares + qty;
           const newAvg = (oldShares * oldAvg + execPrice) / newShares;
-          await pool.query('UPDATE positions SET shares = $1, avg_price = $2, updated_at = NOW() WHERE id = $3', [newShares, newAvg, pos.id]);
+          await pool.query('UPDATE positions SET shares = $1, avg_price = $2, currency = $3, updated_at = NOW() WHERE id = $4', [newShares, newAvg, curr, pos.id]);
         } else {
           await pool.query('INSERT INTO positions (id, portfolio_id, symbol, shares, avg_price, currency) VALUES ($1, $2, $3, $4, $5, $6)', [
             'pos_' + crypto.randomUUID().slice(0, 8),
@@ -377,7 +425,7 @@ router.post('/portfolios/trade', async (req, res) => {
         }
       } else if (type === 'SELL') {
         if (!pos || parseFloat(pos.shares) < qty) return res.status(400).json({ error: 'Insufficient shares held' });
-        cash += costDKK; // Credits the exact converted Kroner amount
+        cash += costDKK; // Correctly credits full converted Kroner amount
         const remaining = parseFloat(pos.shares) - qty;
         if (remaining <= 0.00001) {
           await pool.query('DELETE FROM positions WHERE id = $1', [pos.id]);
@@ -523,7 +571,7 @@ router.get('/leaderboard', async (req, res) => {
     leaderboard.sort((a, b) => b.totalEquity - a.totalEquity);
     res.json(leaderboard);
   } catch (err) {
-    res.status(500).json({ error: err.message});
+    res.status(500).json({ error: err.message });
   }
 });
 
