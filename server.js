@@ -7,6 +7,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+// Persistent In-Memory Store
 globalThis.__AURA_DB = globalThis.__AURA_DB || {
   users: [],
   portfolios: [],
@@ -15,6 +18,7 @@ globalThis.__AURA_DB = globalThis.__AURA_DB || {
 };
 const memoryDb = globalThis.__AURA_DB;
 
+// PostgreSQL Connection Pool
 const dbUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL;
 let pool = null;
 
@@ -68,27 +72,124 @@ async function initDb() {
       );
     `);
   } catch (err) {
-    console.error('Schema init error:', err.message);
+    console.error('Database schema error:', err.message);
   }
 }
 initDb();
 
-const quoteCache = {};
+// ==========================================
+// YAHOO FINANCE COOKIE & CRUMB ENGINE
+// ==========================================
 
-// Live Search via Yahoo Finance Search Autocomplete
-function searchYahoo(query) {
+let sessionCache = {
+  cookie: null,
+  crumb: null,
+  timestamp: 0
+};
+
+function fetchCookie() {
   return new Promise((resolve) => {
-    if (!query || !query.trim()) return resolve([]);
-    const cleanQuery = encodeURIComponent(query.trim());
-    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${cleanQuery}&quotesCount=10&newsCount=0&listsCount=0&enableFuzzyQuery=false`;
     const options = {
+      hostname: 'fc.yahoo.com',
+      path: '/',
+      method: 'GET',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'application/json'
+        'User-Agent': USER_AGENT,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
       }
     };
 
-    const req = https.get(url, options, (res) => {
+    const req = https.request(options, (res) => {
+      const rawCookies = res.headers['set-cookie'] || [];
+      const cookie = rawCookies.map(c => c.split(';')[0]).join('; ');
+      resolve(cookie || null);
+    });
+
+    req.on('error', () => resolve(null));
+    req.setTimeout(4500, () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+function fetchCrumb(cookie) {
+  return new Promise((resolve) => {
+    if (!cookie) return resolve(null);
+    const options = {
+      hostname: 'query2.finance.yahoo.com',
+      path: '/v1/test/getcrumb',
+      method: 'GET',
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Cookie': cookie,
+        'Accept': '*/*'
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        if (res.statusCode === 200 && data && !data.includes('<html')) {
+          resolve(data.trim());
+        } else {
+          resolve(null);
+        }
+      });
+    });
+
+    req.on('error', () => resolve(null));
+    req.setTimeout(4500, () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+async function getYahooSession(forceRefresh = false) {
+  const isExpired = Date.now() - sessionCache.timestamp > 1000 * 60 * 60 * 6; // 6 hours
+  if (!forceRefresh && !isExpired && sessionCache.cookie && sessionCache.crumb) {
+    return sessionCache;
+  }
+
+  const cookie = await fetchCookie();
+  const crumb = await fetchCrumb(cookie);
+
+  if (crumb && cookie) {
+    sessionCache = { cookie, crumb, timestamp: Date.now() };
+  } else if (cookie) {
+    sessionCache = { cookie, crumb: null, timestamp: Date.now() };
+  }
+  return sessionCache;
+}
+
+// ==========================================
+// MARKET SEARCH & QUOTES
+// ==========================================
+
+const quoteCache = {};
+
+function searchYahoo(query) {
+  return new Promise(async (resolve) => {
+    if (!query || !query.trim()) return resolve([]);
+    const session = await getYahooSession();
+    const cleanQuery = encodeURIComponent(query.trim());
+    
+    let path = `/v1/finance/search?q=${cleanQuery}&quotesCount=12&newsCount=0&listsCount=0&enableFuzzyQuery=false`;
+    if (session.crumb) path += `&crumb=${encodeURIComponent(session.crumb)}`;
+
+    const headers = {
+      'User-Agent': USER_AGENT,
+      'Accept': 'application/json'
+    };
+    if (session.cookie) headers['Cookie'] = session.cookie;
+
+    const options = {
+      hostname: 'query2.finance.yahoo.com',
+      path,
+      method: 'GET',
+      headers
+    };
+
+    const req = https.request(options, (res) => {
       let data = '';
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
@@ -96,7 +197,7 @@ function searchYahoo(query) {
           const parsed = JSON.parse(data);
           const quotes = parsed.quotes || [];
           const results = quotes
-            .filter(q => q.symbol && (q.quoteType === 'EQUITY' || q.quoteType === 'ETF' || q.quoteType === 'CRYPTOCURRENCY' || q.quoteType === 'CURRENCY' || q.quoteType === 'INDEX'))
+            .filter(q => q.symbol && ['EQUITY', 'ETF', 'CRYPTOCURRENCY', 'CURRENCY', 'INDEX'].includes(q.quoteType))
             .map(q => ({
               symbol: q.symbol.toUpperCase(),
               name: q.shortname || q.longname || q.symbol,
@@ -111,32 +212,38 @@ function searchYahoo(query) {
     });
 
     req.on('error', () => resolve([]));
-    req.setTimeout(3500, () => {
-      req.destroy();
-      resolve([]);
-    });
+    req.setTimeout(4500, () => { req.destroy(); resolve([]); });
+    req.end();
   });
 }
 
-// Global Quote Fetcher
 function fetchYahooQuote(symbol) {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     const clean = symbol.trim().toUpperCase();
     const cached = quoteCache[clean];
     if (cached && Date.now() - cached.timestamp < 3000) {
       return resolve(cached.data);
     }
 
-    const encodedSymbol = encodeURIComponent(clean);
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodedSymbol}?interval=15m&range=1d`;
+    const session = await getYahooSession();
+    const encoded = encodeURIComponent(clean);
+    let path = `/v8/finance/chart/${encoded}?interval=15m&range=1d`;
+    if (session.crumb) path += `&crumb=${encodeURIComponent(session.crumb)}`;
+
+    const headers = {
+      'User-Agent': USER_AGENT,
+      'Accept': 'application/json'
+    };
+    if (session.cookie) headers['Cookie'] = session.cookie;
+
     const options = {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'application/json'
-      }
+      hostname: 'query2.finance.yahoo.com',
+      path,
+      method: 'GET',
+      headers
     };
 
-    const req = https.get(url, options, (res) => {
+    const req = https.request(options, (res) => {
       let data = '';
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
@@ -183,10 +290,8 @@ function fetchYahooQuote(symbol) {
     });
 
     req.on('error', () => resolve(getFallbackQuote(clean)));
-    req.setTimeout(4000, () => {
-      req.destroy();
-      resolve(getFallbackQuote(clean));
-    });
+    req.setTimeout(4500, () => { req.destroy(); resolve(getFallbackQuote(clean)); });
+    req.end();
   });
 }
 
@@ -221,16 +326,22 @@ function getFallbackQuote(symbol) {
   };
 }
 
-function executeChartQuery(symbol, interval, range) {
+function executeChartQuery(symbol, interval, range, session) {
   return new Promise((resolve) => {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}`;
+    let path = `/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}`;
+    if (session.crumb) path += `&crumb=${encodeURIComponent(session.crumb)}`;
+
+    const headers = { 'User-Agent': USER_AGENT };
+    if (session.cookie) headers['Cookie'] = session.cookie;
+
     const options = {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-      }
+      hostname: 'query2.finance.yahoo.com',
+      path,
+      method: 'GET',
+      headers
     };
 
-    const req = https.get(url, options, (res) => {
+    const req = https.request(options, (res) => {
       let data = '';
       res.on('data', c => { data += c; });
       res.on('end', () => {
@@ -259,30 +370,42 @@ function executeChartQuery(symbol, interval, range) {
     });
 
     req.on('error', () => resolve([]));
-    req.setTimeout(4000, () => { req.destroy(); resolve([]); });
+    req.setTimeout(4500, () => { req.destroy(); resolve([]); });
+    req.end();
   });
 }
 
 async function fetchYahooChart(symbol, range = '1M') {
+  const session = await getYahooSession();
   let interval = '1d';
   let yRange = '1mo';
   if (range === '1D') { interval = '5m'; yRange = '1d'; }
   else if (range === '1W') { interval = '15m'; yRange = '5d'; }
   else if (range === '1Y') { interval = '1wk'; yRange = '1y'; }
 
-  let history = await executeChartQuery(symbol, interval, yRange);
+  let history = await executeChartQuery(symbol, interval, yRange, session);
   if (history.length === 0 && range === '1D') {
-    history = await executeChartQuery(symbol, '15m', '5d');
+    history = await executeChartQuery(symbol, '15m', '5d', session);
   }
   return history;
 }
 
+// ==========================================
+// ROUTER & APPLICATION ENDPOINTS
+// ==========================================
+
 const router = express.Router();
 
 router.get('/health', async (req, res) => {
+  const session = await getYahooSession();
   res.json({
     status: 'ok',
     database: pool ? 'postgresql' : 'in-memory-safe',
+    yahooSession: {
+      hasCookie: !!session.cookie,
+      hasCrumb: !!session.crumb,
+      crumbPreview: session.crumb ? `${session.crumb.slice(0, 4)}...` : null
+    },
     timestamp: new Date().toISOString()
   });
 });
