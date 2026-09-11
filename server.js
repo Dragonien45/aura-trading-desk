@@ -258,3 +258,50 @@ Paste:
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
+
+
+Click Commit changes.
+
+File 9: src/index.css
+
+Click Add file → Create new file.
+
+Filename: src/index.css (typing the slash creates the src folder!).
+
+Paste:
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: #FBFBF9;
+}
+
+code, .font-mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+
+Click Commit changes.
+
+File 10: src/main.jsx
+
+Click Add file → Create new file.
+
+Filename: src/main.jsx.
+
+Paste:
+
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App.jsx';
+import './index.css';
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+);
