@@ -90,8 +90,9 @@ export default function App() {
   const [portfolioTimeframe, setPortfolioTimeframe] = useState('1M');
   const [portfolioChartData, setPortfolioChartData] = useState([]);
   const [portfolioChartLoading, setPortfolioChartLoading] = useState(false);
-  const [holdingsFilter, setHoldingsFilter] = useState('all'); // 'all' | portfolioId
+  const [holdingsFilter, setHoldingsFilter] = useState('active'); // 'active' | 'all' | specific id
 
+  // Global search & market execution states
   const [selectedSymbol, setSelectedSymbol] = useState('AAPL');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -165,6 +166,13 @@ export default function App() {
     const targetNative = availableInNative * (pct / 100);
     handleNativeAmountChange(targetNative.toFixed(2));
     setInputMode('native');
+  };
+
+  const handlePortfolioSwitch = (portfolioId) => {
+    setActivePortfolioId(portfolioId);
+    if (holdingsFilter !== 'all') {
+      setHoldingsFilter(portfolioId);
+    }
   };
 
   const checkHealth = async () => {
@@ -306,13 +314,6 @@ export default function App() {
     if (!portfolios || portfolios.length === 0) return null;
     return portfolios.find(p => p.id === activePortfolioId) || portfolios[0];
   }, [portfolios, activePortfolioId]);
-
-  const handlePortfolioSwitch = (newId) => {
-    setActivePortfolioId(newId);
-    if (holdingsFilter !== 'all') {
-      setHoldingsFilter(newId);
-    }
-  };
 
   useEffect(() => {
     if (!activePortfolio) return;
@@ -460,8 +461,9 @@ export default function App() {
     if (holdingsFilter === 'all') {
       return allHoldingsCalculations.allItems;
     }
-    return allHoldingsCalculations.allItems.filter(item => item.portfolioId === holdingsFilter);
-  }, [allHoldingsCalculations, holdingsFilter]);
+    const targetId = (holdingsFilter === 'active' || !holdingsFilter) ? activePortfolio?.id : holdingsFilter;
+    return allHoldingsCalculations.allItems.filter(item => item.portfolioId === targetId);
+  }, [allHoldingsCalculations, holdingsFilter, activePortfolio]);
 
   const totalEquity = (activePortfolio?.cashBalance || 0) + (allHoldingsCalculations.totalMarketValueDKK || 0);
 
@@ -869,7 +871,7 @@ export default function App() {
                   </div>
                   <div>
                     <h3 className="text-base font-semibold text-slate-950">Samlet Porteføljeudvikling</h3>
-                    <p className="text-xs text-slate-600">Historisk markedsværdi af det valgte handelsbord i DKK</p>
+                    <p className="text-xs text-slate-600">Historisk markedsværdi for {activePortfolio?.name} i DKK</p>
                   </div>
                 </div>
 
@@ -950,11 +952,21 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* Portfolio Filter Pills */}
+                {/* Filter Pills */}
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-3 mb-3 border-b border-slate-100 text-xs">
                   <span className="text-slate-400 text-[11px] flex items-center gap-1 mr-1 shrink-0 font-mono">
                     <Filter className="w-3 h-3" /> Vis:
                   </span>
+                  <button
+                    onClick={() => setHoldingsFilter('active')}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition shrink-0 ${
+                      (holdingsFilter === 'active' || holdingsFilter === activePortfolio?.id)
+                        ? 'bg-slate-950 text-white shadow-xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    {activePortfolio?.name || 'Valgt Bord'} ({allHoldingsCalculations.allItems.filter(i => i.portfolioId === activePortfolio?.id).length})
+                  </button>
                   <button
                     onClick={() => setHoldingsFilter('all')}
                     className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition shrink-0 ${
@@ -965,7 +977,7 @@ export default function App() {
                   >
                     Alle Borde ({allHoldingsCalculations.allItems.length})
                   </button>
-                  {portfolios.map(p => {
+                  {portfolios.filter(p => p.id !== activePortfolio?.id).map(p => {
                     const count = allHoldingsCalculations.allItems.filter(i => i.portfolioId === p.id).length;
                     const isSelected = holdingsFilter === p.id;
                     return (
@@ -984,6 +996,7 @@ export default function App() {
                   })}
                 </div>
 
+                {}
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
                     <thead>
@@ -1004,59 +1017,58 @@ export default function App() {
                           <td colSpan={holdingsFilter === 'all' ? 8 : 7} className="py-8 text-center text-slate-500 font-sans">
                             {holdingsFilter === 'all'
                               ? 'Ingen åbne positioner i nogen af dine handelsborde endnu.'
-                              : `Ingen åbne positioner i ${portfolios.find(p => p.id === holdingsFilter)?.name || 'dette bord'}.`}
+                              : `Ingen åbne positioner i ${portfolios.find(p => p.id === (holdingsFilter === 'active' ? activePortfolio?.id : holdingsFilter))?.name || 'dette bord'}. Brug Trade / Markets til at handle.`}
                           </td>
                         </tr>
                       ) : (
-                        displayedHoldings.map(pos => (
-                          <tr key={`${pos.portfolioId}-${pos.symbol}`} className="hover:bg-slate-50 transition">
-                            <td className="py-3.5">
-                              <button
-                                onClick={() => {
-                                  selectAsset(pos.symbol);
-                                  handlePortfolioSwitch(pos.portfolioId);
-                                  setActiveTab('markets');
-                                }}
-                                className="text-left group cursor-pointer"
-                              >
-                                <div className="font-bold text-slate-950 group-hover:text-blue-600 transition flex items-center gap-1.5">
-                                  <span>{pos.symbol}</span>
-                                  <span className="text-[10px] text-slate-400 font-normal">({pos.currency})</span>
-                                </div>
-                                <div className="text-[11px] text-slate-500 font-normal truncate max-w-[160px] font-sans">
-                                  {pos.stockName}
-                                </div>
-                              </button>
-                            </td>
-                            {holdingsFilter === 'all' && (
+                        displayedHoldings.map(pos => {
+                          const stockName = pos.stockName || pos.symbol;
+                          return (
+                            <tr key={`${pos.portfolioId}_${pos.symbol}`} className="hover:bg-slate-50 transition">
                               <td className="py-3.5">
-                                <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[10px] font-sans font-medium">
-                                  {pos.portfolioName}
-                                </span>
+                                <button
+                                  onClick={() => {
+                                    selectAsset(pos.symbol);
+                                    setActiveTab('markets');
+                                  }}
+                                  className="text-left group cursor-pointer"
+                                >
+                                  <div className="font-bold text-slate-950 group-hover:text-blue-600 transition flex items-center gap-1.5">
+                                    <span>{pos.symbol}</span>
+                                    <span className="text-[10px] text-slate-400 font-normal">({pos.currency})</span>
+                                  </div>
+                                  <div className="text-[11px] text-slate-500 font-normal truncate max-w-[160px] font-sans">
+                                    {stockName}
+                                  </div>
+                                </button>
                               </td>
-                            )}
-                            <td className="py-3.5 text-right text-slate-800">{pos.shares.toLocaleString()}</td>
-                            <td className="py-3.5 text-right text-slate-800">{formatNativePrice(pos.avgPrice, pos.currency)}</td>
-                            <td className="py-3.5 text-right font-medium text-slate-950">{formatNativePrice(pos.livePrice, pos.currency)}</td>
-                            <td className="py-3.5 text-right font-bold text-slate-950">{formatDKK(pos.marketValDKK)}</td>
-                            <td className={`py-3.5 text-right font-medium ${(pos.gainDKK || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                              {(pos.gainDKK || 0) >= 0 ? '+' : ''}{formatDKK(pos.gainDKK)}
-                              <div className="text-[10px] text-slate-400">({(pos.gainPct || 0) >= 0 ? '+' : ''}{(pos.gainPct || 0).toFixed(2)}%)</div>
-                            </td>
-                            <td className="py-3.5 text-right">
-                              <button
-                                onClick={() => {
-                                  selectAsset(pos.symbol);
-                                  handlePortfolioSwitch(pos.portfolioId);
-                                  setActiveTab('markets');
-                                }}
-                                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-900 rounded font-semibold text-[11px] transition"
-                              >
-                                Handl
-                              </button>
-                            </td>
-                          </tr>
-                        ))
+                              {holdingsFilter === 'all' && (
+                                <td className="py-3.5 text-slate-600 font-sans font-medium text-[11px]">
+                                  {pos.portfolioName}
+                                </td>
+                              )}
+                              <td className="py-3.5 text-right text-slate-800">{pos.shares.toLocaleString()}</td>
+                              <td className="py-3.5 text-right text-slate-800">{formatNativePrice(pos.avgPrice, pos.currency)}</td>
+                              <td className="py-3.5 text-right font-medium text-slate-950">{formatNativePrice(pos.livePrice, pos.currency)}</td>
+                              <td className="py-3.5 text-right font-bold text-slate-950">{formatDKK(pos.marketValDKK)}</td>
+                              <td className={`py-3.5 text-right font-medium ${(pos.gainDKK || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                                {(pos.gainDKK || 0) >= 0 ? '+' : ''}{formatDKK(pos.gainDKK)}
+                                <div className="text-[10px] text-slate-400">({(pos.gainPct || 0) >= 0 ? '+' : ''}{(pos.gainPct || 0).toFixed(2)}%)</div>
+                              </td>
+                              <td className="py-3.5 text-right">
+                                <button
+                                  onClick={() => {
+                                    selectAsset(pos.symbol);
+                                    setActiveTab('markets');
+                                  }}
+                                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-900 rounded font-semibold text-[11px] transition"
+                                >
+                                  Handl
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
                       )}
                     </tbody>
                   </table>
@@ -1162,6 +1174,7 @@ export default function App() {
                   )}
                 </div>
 
+                {/* Quick select pills */}
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-3 mb-4 text-xs font-mono">
                   <span className="text-slate-400 text-[11px] mr-1 flex items-center gap-1">
                     <Globe2 className="w-3 h-3" /> Hurtig:
@@ -1181,6 +1194,7 @@ export default function App() {
                   ))}
                 </div>
 
+                {}
                 <div className="flex flex-wrap justify-between items-end gap-4 border-b border-slate-100 pb-5">
                   <div>
                     <div className="flex items-center gap-3">
@@ -1218,6 +1232,7 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Historical Area Chart */}
                 <div className="flex justify-between items-center mt-5 mb-3">
                   <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600">Historiske Graffer ({activeTimeframe})</div>
                   <div className="flex gap-1 bg-slate-100 p-0.5 rounded-md">
@@ -1518,6 +1533,7 @@ export default function App() {
               </div>
             </div>
 
+            {}
             <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
               <h3 className="text-base font-semibold text-slate-950 mb-1">Handelslog (Audit Trail)</h3>
               <p className="text-xs text-slate-600 mb-5">Transaktionshistorik for {activePortfolio?.name}</p>
