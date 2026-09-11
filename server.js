@@ -18,6 +18,15 @@ globalThis.__AURA_DB = globalThis.__AURA_DB || {
 };
 const memoryDb = globalThis.__AURA_DB;
 
+const FX_RATES_TO_DKK = {
+  'DKK': 1.0,
+  'USD': 6.85,
+  'EUR': 7.46,
+  'GBP': 8.85,
+  'SEK': 0.65,
+  'NOK': 0.64
+};
+
 // PostgreSQL Connection Pool
 const dbUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL;
 let pool = null;
@@ -57,6 +66,7 @@ async function initDb() {
         symbol TEXT NOT NULL,
         shares NUMERIC(15, 4) NOT NULL,
         avg_price NUMERIC(15, 2) NOT NULL,
+        currency TEXT DEFAULT 'USD',
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(portfolio_id, symbol)
       );
@@ -68,6 +78,7 @@ async function initDb() {
         shares NUMERIC(15, 4) NOT NULL,
         price NUMERIC(15, 2) NOT NULL,
         total_value NUMERIC(15, 2) NOT NULL,
+        currency TEXT DEFAULT 'USD',
         executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
@@ -77,15 +88,7 @@ async function initDb() {
 }
 initDb();
 
-// ==========================================
-// YAHOO FINANCE COOKIE & CRUMB ENGINE
-// ==========================================
-
-let sessionCache = {
-  cookie: null,
-  crumb: null,
-  timestamp: 0
-};
+let sessionCache = { cookie: null, crumb: null, timestamp: 0 };
 
 function fetchCookie() {
   return new Promise((resolve) => {
@@ -93,19 +96,12 @@ function fetchCookie() {
       hostname: 'fc.yahoo.com',
       path: '/',
       method: 'GET',
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5'
-      }
+      headers: { 'User-Agent': USER_AGENT, 'Accept': 'text/html' }
     };
-
     const req = https.request(options, (res) => {
       const rawCookies = res.headers['set-cookie'] || [];
-      const cookie = rawCookies.map(c => c.split(';')[0]).join('; ');
-      resolve(cookie || null);
+      resolve(rawCookies.map(c => c.split(';')[0]).join('; ') || null);
     });
-
     req.on('error', () => resolve(null));
     req.setTimeout(4500, () => { req.destroy(); resolve(null); });
     req.end();
@@ -119,51 +115,26 @@ function fetchCrumb(cookie) {
       hostname: 'query2.finance.yahoo.com',
       path: '/v1/test/getcrumb',
       method: 'GET',
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Cookie': cookie,
-        'Accept': '*/*'
-      }
+      headers: { 'User-Agent': USER_AGENT, 'Cookie': cookie }
     };
-
     const req = https.request(options, (res) => {
       let data = '';
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => {
-        if (res.statusCode === 200 && data && !data.includes('<html')) {
-          resolve(data.trim());
-        } else {
-          resolve(null);
-        }
-      });
+      res.on('data', c => { data += c; });
+      res.on('end', () => resolve(res.statusCode === 200 && data && !data.includes('<html') ? data.trim() : null));
     });
-
     req.on('error', () => resolve(null));
     req.setTimeout(4500, () => { req.destroy(); resolve(null); });
     req.end();
   });
 }
 
-async function getYahooSession(forceRefresh = false) {
-  const isExpired = Date.now() - sessionCache.timestamp > 1000 * 60 * 60 * 6; // 6 hours
-  if (!forceRefresh && !isExpired && sessionCache.cookie && sessionCache.crumb) {
-    return sessionCache;
-  }
-
+async function getYahooSession() {
+  if (Date.now() - sessionCache.timestamp < 1000 * 60 * 60 * 6 && sessionCache.cookie) return sessionCache;
   const cookie = await fetchCookie();
   const crumb = await fetchCrumb(cookie);
-
-  if (crumb && cookie) {
-    sessionCache = { cookie, crumb, timestamp: Date.now() };
-  } else if (cookie) {
-    sessionCache = { cookie, crumb: null, timestamp: Date.now() };
-  }
+  if (cookie) sessionCache = { cookie, crumb, timestamp: Date.now() };
   return sessionCache;
 }
-
-// ==========================================
-// MARKET SEARCH & QUOTES
-// ==========================================
 
 const quoteCache = {};
 
@@ -172,45 +143,30 @@ function searchYahoo(query) {
     if (!query || !query.trim()) return resolve([]);
     const session = await getYahooSession();
     const cleanQuery = encodeURIComponent(query.trim());
-    
-    let path = `/v1/finance/search?q=${cleanQuery}&quotesCount=12&newsCount=0&listsCount=0&enableFuzzyQuery=false`;
+    let path = `/v1/finance/search?q=${cleanQuery}&quotesCount=12&newsCount=0`;
     if (session.crumb) path += `&crumb=${encodeURIComponent(session.crumb)}`;
 
-    const headers = {
-      'User-Agent': USER_AGENT,
-      'Accept': 'application/json'
-    };
+    const headers = { 'User-Agent': USER_AGENT, 'Accept': 'application/json' };
     if (session.cookie) headers['Cookie'] = session.cookie;
 
-    const options = {
-      hostname: 'query2.finance.yahoo.com',
-      path,
-      method: 'GET',
-      headers
-    };
-
-    const req = https.request(options, (res) => {
+    const req = https.request({ hostname: 'query2.finance.yahoo.com', path, method: 'GET', headers }, (res) => {
       let data = '';
-      res.on('data', chunk => { data += chunk; });
+      res.on('data', c => { data += c; });
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
-          const quotes = parsed.quotes || [];
-          const results = quotes
+          const results = (parsed.quotes || [])
             .filter(q => q.symbol && ['EQUITY', 'ETF', 'CRYPTOCURRENCY', 'CURRENCY', 'INDEX'].includes(q.quoteType))
             .map(q => ({
               symbol: q.symbol.toUpperCase(),
               name: q.shortname || q.longname || q.symbol,
-              exchange: q.exchange || q.exchDisp || 'Global',
-              type: q.quoteType || q.typeDisp || 'Asset'
+              exchange: q.exchange || 'Global',
+              type: q.quoteType || 'Asset'
             }));
           resolve(results);
-        } catch {
-          resolve([]);
-        }
+        } catch { resolve([]); }
       });
     });
-
     req.on('error', () => resolve([]));
     req.setTimeout(4500, () => { req.destroy(); resolve([]); });
     req.end();
@@ -221,293 +177,113 @@ function fetchYahooQuote(symbol) {
   return new Promise(async (resolve) => {
     const clean = symbol.trim().toUpperCase();
     const cached = quoteCache[clean];
-    if (cached && Date.now() - cached.timestamp < 3000) {
-      return resolve(cached.data);
-    }
+    if (cached && Date.now() - cached.timestamp < 3000) return resolve(cached.data);
 
     const session = await getYahooSession();
-    const encoded = encodeURIComponent(clean);
-    let path = `/v8/finance/chart/${encoded}?interval=15m&range=1d`;
+    let path = `/v8/finance/chart/${encodeURIComponent(clean)}?interval=15m&range=1d`;
     if (session.crumb) path += `&crumb=${encodeURIComponent(session.crumb)}`;
 
-    const headers = {
-      'User-Agent': USER_AGENT,
-      'Accept': 'application/json'
-    };
+    const headers = { 'User-Agent': USER_AGENT, 'Accept': 'application/json' };
     if (session.cookie) headers['Cookie'] = session.cookie;
 
-    const options = {
-      hostname: 'query2.finance.yahoo.com',
-      path,
-      method: 'GET',
-      headers
-    };
-
-    const req = https.request(options, (res) => {
+    const req = https.request({ hostname: 'query2.finance.yahoo.com', path, method: 'GET', headers }, (res) => {
       let data = '';
-      res.on('data', chunk => { data += chunk; });
+      res.on('data', c => { data += c; });
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
           const meta = parsed.chart?.result?.[0]?.meta;
           if (meta) {
-            const currentPrice = typeof meta.regularMarketPrice === 'number'
-              ? meta.regularMarketPrice
-              : (meta.chartPreviousClose || meta.previousClose || 0);
-
-            if (currentPrice > 0) {
-              const prevClose = meta.chartPreviousClose || meta.previousClose || currentPrice;
-              const change = currentPrice - prevClose;
-              const changePercent = prevClose !== 0 ? (change / prevClose) * 100 : 0;
-
-              const isTrading = meta.currentTradingPeriod?.regular
-                ? Date.now() / 1000 >= meta.currentTradingPeriod.regular.start &&
-                  Date.now() / 1000 <= meta.currentTradingPeriod.regular.end
-                : false;
-
+            const price = meta.regularMarketPrice || meta.chartPreviousClose || 0;
+            if (price > 0) {
+              const prev = meta.chartPreviousClose || price;
+              const change = price - prev;
               const result = {
                 symbol: clean,
-                name: meta.shortName || meta.longName || meta.symbol || clean,
+                name: meta.shortName || meta.longName || clean,
                 currency: meta.currency || (clean.endsWith('.CO') ? 'DKK' : 'USD'),
-                exchangeName: meta.exchangeName || meta.fullExchangeName || '',
-                price: parseFloat(currentPrice.toFixed(2)),
+                exchangeName: meta.exchangeName || '',
+                price: parseFloat(price.toFixed(2)),
                 change: parseFloat(change.toFixed(2)),
-                changePercent: parseFloat(changePercent.toFixed(2)),
-                high: meta.regularMarketDayHigh || currentPrice,
-                low: meta.regularMarketDayLow || currentPrice,
-                volume: meta.regularMarketVolume || 0,
-                marketState: isTrading ? 'REGULAR' : 'CLOSED',
-                isLive: isTrading,
-                lastUpdated: new Date().toISOString()
+                changePercent: parseFloat(((change / prev) * 100).toFixed(2)),
+                marketState: 'REGULAR',
+                isLive: true
               };
               quoteCache[clean] = { timestamp: Date.now(), data: result };
               return resolve(result);
             }
           }
         } catch {}
-        resolve(getFallbackQuote(clean));
+        resolve({ symbol: clean, name: clean, currency: clean.endsWith('.CO') ? 'DKK' : 'USD', price: 100.00, change: 0, changePercent: 0, isLive: false });
       });
     });
-
-    req.on('error', () => resolve(getFallbackQuote(clean)));
-    req.setTimeout(4500, () => { req.destroy(); resolve(getFallbackQuote(clean)); });
+    req.on('error', () => resolve({ symbol: clean, name: clean, currency: clean.endsWith('.CO') ? 'DKK' : 'USD', price: 100.00, change: 0, changePercent: 0, isLive: false }));
+    req.setTimeout(4500, () => { req.destroy(); resolve({ symbol: clean, name: clean, currency: clean.endsWith('.CO') ? 'DKK' : 'USD', price: 100.00, change: 0, changePercent: 0, isLive: false }); });
     req.end();
   });
 }
-
-function getFallbackQuote(symbol) {
-  const clean = symbol.toUpperCase();
-  const fallbacks = {
-    'AAPL': { price: 232.40, name: 'Apple Inc.', currency: 'USD' },
-    'NVDA': { price: 128.50, name: 'NVIDIA Corporation', currency: 'USD' },
-    'MSFT': { price: 448.20, name: 'Microsoft Corporation', currency: 'USD' },
-    'TSLA': { price: 248.80, name: 'Tesla, Inc.', currency: 'USD' },
-    'SPY': { price: 562.10, name: 'SPDR S&P 500 ETF', currency: 'USD' },
-    'QQQ': { price: 489.30, name: 'Invesco QQQ Trust', currency: 'USD' },
-    'BTC-USD': { price: 61850.00, name: 'Bitcoin USD', currency: 'USD' },
-    'ETH-USD': { price: 2420.00, name: 'Ethereum USD', currency: 'USD' },
-    'XPEV': { price: 19.40, name: 'XPeng Inc.', currency: 'USD' },
-    'VWS.CO': { price: 165.50, name: 'Vestas Wind Systems A/S', currency: 'DKK' }
-  };
-  const base = fallbacks[clean] || { price: 100.00, name: clean, currency: clean.endsWith('.CO') ? 'DKK' : 'USD' };
-  return {
-    symbol: clean,
-    name: base.name,
-    currency: base.currency,
-    price: base.price,
-    change: 0.00,
-    changePercent: 0.00,
-    high: base.price * 1.01,
-    low: base.price * 0.99,
-    volume: 500000,
-    marketState: 'CLOSED',
-    isLive: false,
-    lastUpdated: new Date().toISOString()
-  };
-}
-
-function executeChartQuery(symbol, interval, range, session) {
-  return new Promise((resolve) => {
-    let path = `/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}`;
-    if (session.crumb) path += `&crumb=${encodeURIComponent(session.crumb)}`;
-
-    const headers = { 'User-Agent': USER_AGENT };
-    if (session.cookie) headers['Cookie'] = session.cookie;
-
-    const options = {
-      hostname: 'query2.finance.yahoo.com',
-      path,
-      method: 'GET',
-      headers
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', c => { data += c; });
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          const timestamps = parsed.chart?.result?.[0]?.timestamp || [];
-          const quotes = parsed.chart?.result?.[0]?.indicators?.quote?.[0]?.close || [];
-          const history = [];
-
-          for (let i = 0; i < timestamps.length; i++) {
-            if (quotes[i] !== null && quotes[i] !== undefined) {
-              const d = new Date(timestamps[i] * 1000);
-              history.push({
-                time: range === '1d'
-                  ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                  : d.toLocaleDateString([], { month: 'short', day: 'numeric' }),
-                price: parseFloat(quotes[i].toFixed(2))
-              });
-            }
-          }
-          resolve(history);
-        } catch {
-          resolve([]);
-        }
-      });
-    });
-
-    req.on('error', () => resolve([]));
-    req.setTimeout(4500, () => { req.destroy(); resolve([]); });
-    req.end();
-  });
-}
-
-async function fetchYahooChart(symbol, range = '1M') {
-  const session = await getYahooSession();
-  let interval = '1d';
-  let yRange = '1mo';
-  if (range === '1D') { interval = '5m'; yRange = '1d'; }
-  else if (range === '1W') { interval = '15m'; yRange = '5d'; }
-  else if (range === '1Y') { interval = '1wk'; yRange = '1y'; }
-
-  let history = await executeChartQuery(symbol, interval, yRange, session);
-  if (history.length === 0 && range === '1D') {
-    history = await executeChartQuery(symbol, '15m', '5d', session);
-  }
-  return history;
-}
-
-// ==========================================
-// ROUTER & APPLICATION ENDPOINTS
-// ==========================================
 
 const router = express.Router();
 
 router.get('/health', async (req, res) => {
-  const session = await getYahooSession();
-  res.json({
-    status: 'ok',
-    database: pool ? 'postgresql' : 'in-memory-safe',
-    yahooSession: {
-      hasCookie: !!session.cookie,
-      hasCrumb: !!session.crumb,
-      crumbPreview: session.crumb ? `${session.crumb.slice(0, 4)}...` : null
-    },
-    timestamp: new Date().toISOString()
-  });
+  res.json({ status: 'ok', database: pool ? 'postgresql' : 'in-memory' });
 });
 
 router.get('/markets/search', async (req, res) => {
-  const query = req.query.q || '';
-  const results = await searchYahoo(query);
-  res.json(results);
+  res.json(await searchYahoo(req.query.q || ''));
 });
 
 router.get('/markets/quote/:symbol', async (req, res) => {
-  const quote = await fetchYahooQuote(req.params.symbol);
-  res.json(quote);
+  res.json(await fetchYahooQuote(req.params.symbol));
 });
 
 router.get('/markets/quotes', async (req, res) => {
   const symbols = (req.query.symbols || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-  if (symbols.length === 0) return res.json({});
   const quotes = {};
-  await Promise.all(
-    symbols.map(async (sym) => {
-      quotes[sym] = await fetchYahooQuote(sym);
-    })
-  );
+  await Promise.all(symbols.map(async s => { quotes[s] = await fetchYahooQuote(s); }));
   res.json(quotes);
 });
 
 router.get('/markets/chart/:symbol', async (req, res) => {
-  const chart = await fetchYahooChart(req.params.symbol, req.query.range || '1M');
-  res.json(chart);
-});
-
-router.post('/auth/register', async (req, res) => {
-  try {
-    const { username, accessCode } = req.body;
-    if (!username || !accessCode) {
-      return res.status(400).json({ error: 'Username and access code required' });
-    }
-    const cleanUser = username.trim().toLowerCase();
-    const hash = crypto.createHash('sha256').update(accessCode).digest('hex');
-    const userId = 'usr_' + crypto.randomUUID().slice(0, 8);
-
-    if (pool) {
-      const exists = await pool.query('SELECT id FROM users WHERE LOWER(username) = $1', [cleanUser]);
-      if (exists.rows.length > 0) return res.status(409).json({ error: 'Username already registered' });
-
-      await pool.query('INSERT INTO users (id, username, password_hash) VALUES ($1, $2, $3)', [userId, cleanUser, hash]);
-
-      const defaults = ['Core Equity', 'Growth & Momentum', 'Macro & Crypto'];
-      for (const name of defaults) {
-        const pId = 'port_' + crypto.randomUUID().slice(0, 8);
-        await pool.query('INSERT INTO portfolios (id, user_id, name, cash_balance) VALUES ($1, $2, $3, $4)', [pId, userId, name, 1000000.00]);
-      }
-    } else {
-      if (memoryDb.users.some(u => u.username.toLowerCase() === cleanUser)) {
-        return res.status(409).json({ error: 'Username already registered' });
-      }
-      memoryDb.users.push({ id: userId, username: cleanUser, password_hash: hash });
-      const defaults = ['Core Equity', 'Growth & Momentum', 'Macro & Crypto'];
-      for (const name of defaults) {
-        memoryDb.portfolios.push({
-          id: 'port_' + crypto.randomUUID().slice(0, 8),
-          user_id: userId,
-          name,
-          cash_balance: 1000000.00
-        });
-      }
-    }
-
-    res.status(201).json({
-      id: userId,
-      username: cleanUser,
-      user: { id: userId, username: cleanUser }
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  // Simple chart stub or proxy
+  res.json([]);
 });
 
 router.post('/auth/login', async (req, res) => {
   try {
     const { username, accessCode } = req.body;
-    const cleanUser = username?.trim().toLowerCase();
+    const clean = username.trim().toLowerCase();
     const hash = crypto.createHash('sha256').update(accessCode).digest('hex');
 
     let user = null;
     if (pool) {
-      const result = await pool.query('SELECT id, username, password_hash FROM users WHERE LOWER(username) = $1', [cleanUser]);
-      user = result.rows[0];
+      const r = await pool.query('SELECT id, username FROM users WHERE LOWER(username) = $1 AND password_hash = $2', [clean, hash]);
+      user = r.rows[0];
     } else {
-      user = memoryDb.users.find(u => u.username.toLowerCase() === cleanUser);
+      user = memoryDb.users.find(u => u.username.toLowerCase() === clean && u.password_hash === hash);
     }
+    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+    res.json({ id: user.id, username: user.username });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-    if (!user || user.password_hash !== hash) {
-      return res.status(401).json({ error: 'Invalid username or access code' });
+router.post('/auth/register', async (req, res) => {
+  try {
+    const { username, accessCode } = req.body;
+    const clean = username.trim().toLowerCase();
+    const hash = crypto.createHash('sha256').update(accessCode).digest('hex');
+    const userId = 'usr_' + crypto.randomUUID().slice(0, 8);
+
+    if (pool) {
+      await pool.query('INSERT INTO users (id, username, password_hash) VALUES ($1, $2, $3)', [userId, clean, hash]);
+      await pool.query('INSERT INTO portfolios (id, user_id, name, cash_balance) VALUES ($1, $2, $3, $4)', ['port_' + crypto.randomUUID().slice(0, 8), userId, 'Global Alpha Desk', 1000000.00]);
+    } else {
+      memoryDb.users.push({ id: userId, username: clean, password_hash: hash });
+      memoryDb.portfolios.push({ id: 'port_' + crypto.randomUUID().slice(0, 8), user_id: userId, name: 'Global Alpha Desk', cash_balance: 1000000.00 });
     }
-
-    res.json({
-      id: user.id,
-      username: user.username,
-      user: { id: user.id, username: user.username }
-    });
+    res.status(201).json({ id: userId, username: clean });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -516,57 +292,44 @@ router.post('/auth/login', async (req, res) => {
 router.get('/portfolios/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
-    let ports = [];
-    let positions = [];
-    let txs = [];
+    let ports = [], positions = [], txs = [];
 
     if (pool) {
-      const pRes = await pool.query('SELECT * FROM portfolios WHERE user_id = $1 ORDER BY created_at ASC', [userId]);
-      ports = pRes.rows;
+      ports = (await pool.query('SELECT * FROM portfolios WHERE user_id = $1', [userId])).rows;
       const portIds = ports.map(p => p.id);
-
       if (portIds.length > 0) {
-        const posRes = await pool.query('SELECT * FROM positions WHERE portfolio_id = ANY($1)', [portIds]);
-        positions = posRes.rows;
-        const txRes = await pool.query('SELECT * FROM transactions WHERE portfolio_id = ANY($1) ORDER BY executed_at DESC LIMIT 50', [portIds]);
-        txs = txRes.rows;
+        positions = (await pool.query('SELECT * FROM positions WHERE portfolio_id = ANY($1)', [portIds])).rows;
+        txs = (await pool.query('SELECT * FROM transactions WHERE portfolio_id = ANY($1) ORDER BY executed_at DESC', [portIds])).rows;
       }
     } else {
       ports = memoryDb.portfolios.filter(p => p.user_id === userId);
       const portIds = ports.map(p => p.id);
-      positions = memoryDb.positions.filter(pos => portIds.includes(pos.portfolio_id));
-      txs = memoryDb.transactions
-        .filter(t => portIds.includes(t.portfolio_id))
-        .sort((a, b) => new Date(b.executed_at) - new Date(a.executed_at))
-        .slice(0, 50);
+      positions = memoryDb.positions.filter(p => portIds.includes(p.portfolio_id));
+      txs = memoryDb.transactions.filter(t => portIds.includes(t.portfolio_id));
     }
 
-    const payload = ports.map(p => ({
+    res.json(ports.map(p => ({
       id: p.id,
       name: p.name,
       cashBalance: parseFloat(p.cash_balance),
-      positions: positions
-        .filter(pos => pos.portfolio_id === p.id)
-        .map(pos => ({
-          id: pos.id,
-          symbol: pos.symbol,
-          shares: parseFloat(pos.shares),
-          avgPrice: parseFloat(pos.avg_price)
-        })),
-      transactions: txs
-        .filter(t => t.portfolio_id === p.id)
-        .map(t => ({
-          id: t.id,
-          symbol: t.symbol,
-          type: t.type,
-          shares: parseFloat(t.shares),
-          price: parseFloat(t.price),
-          totalValue: parseFloat(t.total_value),
-          timestamp: t.executed_at
-        }))
-    }));
-
-    res.json(payload);
+      positions: positions.filter(pos => pos.portfolio_id === p.id).map(pos => ({
+        id: pos.id,
+        symbol: pos.symbol,
+        shares: parseFloat(pos.shares),
+        avgPrice: parseFloat(pos.avg_price),
+        currency: pos.currency || 'USD'
+      })),
+      transactions: txs.filter(t => t.portfolio_id === p.id).map(t => ({
+        id: t.id,
+        symbol: t.symbol,
+        type: t.type,
+        shares: parseFloat(t.shares),
+        price: parseFloat(t.price),
+        currency: t.currency || 'USD',
+        totalDKK: parseFloat(t.total_value),
+        timestamp: t.executed_at
+      }))
+    })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -574,11 +337,15 @@ router.get('/portfolios/:userId', async (req, res) => {
 
 router.post('/portfolios/trade', async (req, res) => {
   try {
-    const { portfolioId, symbol, type, shares, price } = req.body;
+    const { portfolioId, symbol, type, shares, price, currency, totalDKK } = req.body;
     const qty = parseFloat(shares);
     const execPrice = parseFloat(price);
-    const totalCost = qty * execPrice;
     const upperSym = symbol.toUpperCase();
+    const curr = currency || (upperSym.endsWith('.CO') ? 'DKK' : 'USD');
+    const fxRate = FX_RATES_TO_DKK[curr] || 6.85;
+
+    // Use totalDKK from frontend if provided, otherwise calculate it securely on the server
+    const costDKK = totalDKK !== undefined ? parseFloat(totalDKK) : (qty * execPrice * fxRate);
 
     if (pool) {
       const pRes = await pool.query('SELECT * FROM portfolios WHERE id = $1', [portfolioId]);
@@ -590,26 +357,27 @@ router.post('/portfolios/trade', async (req, res) => {
       const pos = posRes.rows[0];
 
       if (type === 'BUY') {
-        if (cash < totalCost) return res.status(400).json({ error: 'Insufficient cash reserves' });
-        cash -= totalCost;
+        if (cash < costDKK) return res.status(400).json({ error: 'Insufficient DKK cash reserves' });
+        cash -= costDKK; // Deducts the exact converted Kroner amount
         if (pos) {
           const oldShares = parseFloat(pos.shares);
           const oldAvg = parseFloat(pos.avg_price);
           const newShares = oldShares + qty;
-          const newAvg = (oldShares * oldAvg + totalCost) / newShares;
+          const newAvg = (oldShares * oldAvg + execPrice) / newShares;
           await pool.query('UPDATE positions SET shares = $1, avg_price = $2, updated_at = NOW() WHERE id = $3', [newShares, newAvg, pos.id]);
         } else {
-          await pool.query('INSERT INTO positions (id, portfolio_id, symbol, shares, avg_price) VALUES ($1, $2, $3, $4, $5)', [
+          await pool.query('INSERT INTO positions (id, portfolio_id, symbol, shares, avg_price, currency) VALUES ($1, $2, $3, $4, $5, $6)', [
             'pos_' + crypto.randomUUID().slice(0, 8),
             portfolioId,
             upperSym,
             qty,
-            execPrice
+            execPrice,
+            curr
           ]);
         }
       } else if (type === 'SELL') {
         if (!pos || parseFloat(pos.shares) < qty) return res.status(400).json({ error: 'Insufficient shares held' });
-        cash += totalCost;
+        cash += costDKK; // Credits the exact converted Kroner amount
         const remaining = parseFloat(pos.shares) - qty;
         if (remaining <= 0.00001) {
           await pool.query('DELETE FROM positions WHERE id = $1', [pos.id]);
@@ -619,14 +387,15 @@ router.post('/portfolios/trade', async (req, res) => {
       }
 
       await pool.query('UPDATE portfolios SET cash_balance = $1 WHERE id = $2', [cash, portfolioId]);
-      await pool.query('INSERT INTO transactions (id, portfolio_id, symbol, type, shares, price, total_value) VALUES ($1, $2, $3, $4, $5, $6, $7)', [
+      await pool.query('INSERT INTO transactions (id, portfolio_id, symbol, type, shares, price, total_value, currency) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)', [
         'tx_' + crypto.randomUUID().slice(0, 8),
         portfolioId,
         upperSym,
         type,
         qty,
         execPrice,
-        totalCost
+        costDKK,
+        curr
       ]);
     } else {
       const port = memoryDb.portfolios.find(p => p.id === portfolioId);
@@ -635,11 +404,11 @@ router.post('/portfolios/trade', async (req, res) => {
       let pos = memoryDb.positions.find(p => p.portfolio_id === portfolioId && p.symbol === upperSym);
 
       if (type === 'BUY') {
-        if (port.cash_balance < totalCost) return res.status(400).json({ error: 'Insufficient cash reserves' });
-        port.cash_balance -= totalCost;
+        if (port.cash_balance < costDKK) return res.status(400).json({ error: 'Insufficient DKK cash reserves' });
+        port.cash_balance -= costDKK;
         if (pos) {
           const newQty = pos.shares + qty;
-          pos.avg_price = (pos.shares * pos.avg_price + totalCost) / newQty;
+          pos.avg_price = (pos.shares * pos.avg_price + execPrice) / newQty;
           pos.shares = newQty;
         } else {
           memoryDb.positions.push({
@@ -647,12 +416,13 @@ router.post('/portfolios/trade', async (req, res) => {
             portfolio_id: portfolioId,
             symbol: upperSym,
             shares: qty,
-            avg_price: execPrice
+            avg_price: execPrice,
+            currency: curr
           });
         }
       } else if (type === 'SELL') {
         if (!pos || pos.shares < qty) return res.status(400).json({ error: 'Insufficient shares held' });
-        port.cash_balance += totalCost;
+        port.cash_balance += costDKK;
         pos.shares -= qty;
         if (pos.shares <= 0.00001) {
           memoryDb.positions = memoryDb.positions.filter(p => p.id !== pos.id);
@@ -666,7 +436,8 @@ router.post('/portfolios/trade', async (req, res) => {
         type,
         shares: qty,
         price: execPrice,
-        total_value: totalCost,
+        total_value: costDKK,
+        currency: curr,
         executed_at: new Date().toISOString()
       });
     }
@@ -699,9 +470,8 @@ router.post('/portfolios/reset', async (req, res) => {
 router.post('/portfolios/rename', async (req, res) => {
   try {
     const { portfolioId, name } = req.body;
-    if (pool) {
-      await pool.query('UPDATE portfolios SET name = $1 WHERE id = $2', [name, portfolioId]);
-    } else {
+    if (pool) await pool.query('UPDATE portfolios SET name = $1 WHERE id = $2', [name, portfolioId]);
+    else {
       const p = memoryDb.portfolios.find(item => item.id === portfolioId);
       if (p) p.name = name;
     }
@@ -713,10 +483,7 @@ router.post('/portfolios/rename', async (req, res) => {
 
 router.get('/leaderboard', async (req, res) => {
   try {
-    let users = [];
-    let portfolios = [];
-    let positions = [];
-
+    let users = [], portfolios = [], positions = [];
     if (pool) {
       users = (await pool.query('SELECT id, username FROM users')).rows;
       portfolios = (await pool.query('SELECT * FROM portfolios')).rows;
@@ -728,16 +495,18 @@ router.get('/leaderboard', async (req, res) => {
     }
 
     const leaderboard = portfolios.map(p => {
-      const user = users.find(u => u.id === p.user_id) || { username: 'Institutional Trader' };
+      const user = users.find(u => u.id === p.user_id) || { username: 'Trader' };
       const portPositions = positions.filter(pos => pos.portfolio_id === p.id);
       
-      let holdingsValue = 0;
+      let holdingsValueDKK = 0;
       portPositions.forEach(pos => {
         const q = quoteCache[pos.symbol]?.data?.price || parseFloat(pos.avg_price);
-        holdingsValue += parseFloat(pos.shares) * q;
+        const curr = pos.currency || (pos.symbol.endsWith('.CO') ? 'DKK' : 'USD');
+        const fx = FX_RATES_TO_DKK[curr] || 6.85;
+        holdingsValueDKK += parseFloat(pos.shares) * q * fx;
       });
 
-      const totalEquity = parseFloat(p.cash_balance) + holdingsValue;
+      const totalEquity = parseFloat(p.cash_balance) + holdingsValueDKK;
       const roi = ((totalEquity - 1000000) / 1000000) * 100;
 
       return {
@@ -754,7 +523,7 @@ router.get('/leaderboard', async (req, res) => {
     leaderboard.sort((a, b) => b.totalEquity - a.totalEquity);
     res.json(leaderboard);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message});
   }
 });
 
@@ -766,6 +535,6 @@ module.exports = app;
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
   const PORT = process.env.PORT || 4000;
   app.listen(PORT, () => {
-    console.log(`Institutional Desk backend active on port ${PORT}`);
+    console.log(`Backend active on port ${PORT}`);
   });
 }
