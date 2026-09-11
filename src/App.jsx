@@ -24,10 +24,13 @@ import {
   Activity,
   Server,
   Globe2,
-  ArrowRight
+  ArrowRight,
+  TrendingUp
 } from 'lucide-react';
 
-const API_BASE = '/api';
+const API_BASE = typeof window !== 'undefined' && window.location.origin.includes('vercel.app') 
+  ? '/api' 
+  : 'https://aura-trading-desk-ten.vercel.app/api';
 
 const QUICK_ASSETS = [
   { symbol: 'AAPL', label: 'Apple' },
@@ -42,7 +45,7 @@ const QUICK_ASSETS = [
 
 const TIMEFRAMES = ['1D', '1W', '1M', '1Y'];
 
-// FX Conversion Rates to DKK for portfolio overview translation
+// FX Conversion Rates to Danish Kroner (DKK)
 const FX_RATES_TO_DKK = {
   'DKK': 1.0,
   'USD': 6.85,
@@ -85,11 +88,19 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
 
-  const [apiStatus, setApiStatus] = useState('CONNECTING...');
+  const [apiStatus, setApiStatus] = useState('CHECKING...');
+  const [isBackendConnected, setIsBackendConnected] = useState(false);
   const [activeTab, setActiveTab] = useState('dashboard');
+  
   const [portfolios, setPortfolios] = useState([]);
   const [activePortfolioId, setActivePortfolioId] = useState(null);
   const [portfolioLoading, setPortfolioLoading] = useState(false);
+
+  // Dashboard portfolio chart selection
+  const [dashboardPortfolioId, setDashboardPortfolioId] = useState(null);
+  const [portfolioTimeframe, setPortfolioTimeframe] = useState('1M');
+  const [portfolioChartData, setPortfolioChartData] = useState([]);
+  const [portfolioChartLoading, setPortfolioChartLoading] = useState(false);
 
   // Global search & live market state
   const [selectedSymbol, setSelectedSymbol] = useState('AAPL');
@@ -103,7 +114,7 @@ export default function App() {
   const [marketLoading, setMarketLoading] = useState(false);
   const [heldLiveQuotes, setHeldLiveQuotes] = useState({});
 
-  // Order ticket state with dual-mode sizing (Shares or Native Currency)
+  // Order ticket state with dual-mode sizing
   const [orderType, setOrderType] = useState('BUY');
   const [orderShares, setOrderShares] = useState('');
   const [inputMode, setInputMode] = useState('shares'); // 'shares' | 'native'
@@ -156,11 +167,26 @@ export default function App() {
       const data = await res.json();
       if (data && data.status === 'ok') {
         setApiStatus(data.database === 'postgresql' ? 'ONLINE (POSTGRESQL)' : 'ONLINE (IN-MEMORY)');
+        setIsBackendConnected(true);
       } else {
         setApiStatus('OFFLINE');
+        setIsBackendConnected(false);
       }
     } catch {
       setApiStatus('OFFLINE (UNREACHABLE)');
+      setIsBackendConnected(false);
+    }
+  };
+
+  const fetchLeaderboard = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/leaderboard`);
+      if (res.ok) {
+        const data = await res.json();
+        setLeaderboard(Array.isArray(data) ? data : []);
+      }
+    } catch (e) {
+      console.error('Leaderboard error:', e);
     }
   };
 
@@ -185,7 +211,9 @@ export default function App() {
       if (Array.isArray(portData)) {
         setPortfolios(portData);
         if (portData.length > 0) {
-          setActivePortfolioId(prev => (prev && portData.some(p => p.id === prev) ? prev : portData[0].id));
+          const defaultId = portData[0].id;
+          setActivePortfolioId(prev => (prev && portData.some(p => p.id === prev) ? prev : defaultId));
+          setDashboardPortfolioId(prev => (prev && portData.some(p => p.id === prev) ? prev : defaultId));
         }
       }
     } catch (err) {
@@ -201,7 +229,7 @@ export default function App() {
     }
   }, [user]);
 
-  // Live Debounced Yahoo Search via Backend API
+  // Live Debounced Yahoo Search
   useEffect(() => {
     if (!searchQuery || searchQuery.trim().length < 2) {
       setSearchResults([]);
@@ -275,7 +303,93 @@ export default function App() {
     return portfolios.find(p => p.id === activePortfolioId) || portfolios[0];
   }, [portfolios, activePortfolioId]);
 
-  // Batch load live prices for held assets from backend scraper
+  const selectedDashboardPortfolio = useMemo(() => {
+    if (!portfolios || portfolios.length === 0) return null;
+    return portfolios.find(p => p.id === dashboardPortfolioId) || activePortfolio;
+  }, [portfolios, dashboardPortfolioId, activePortfolio]);
+
+  // Fetch and compute combined portfolio chart data
+  useEffect(() => {
+    if (!selectedDashboardPortfolio) return;
+    let isCancelled = false;
+
+    const computePortfolioChart = async () => {
+      setPortfolioChartLoading(true);
+      try {
+        const positions = selectedDashboardPortfolio.positions || [];
+        if (positions.length === 0) {
+          // If no positions, return steady cash line
+          const dummyPoints = Array.from({ length: 30 }, (_, i) => ({
+            time: `Day ${i + 1}`,
+            value: selectedDashboardPortfolio.cashBalance || 1000000
+          }));
+          if (!isCancelled) setPortfolioChartData(dummyPoints);
+          setPortfolioChartLoading(false);
+          return;
+        }
+
+        // Fetch chart data for all held symbols in parallel
+        const chartPromises = positions.map(pos =>
+          fetch(`${API_BASE}/markets/chart/${encodeURIComponent(pos.symbol)}?range=${portfolioTimeframe}`)
+            .then(res => res.json())
+            .catch(() => [])
+        );
+
+        const chartsResults = await Promise.all(chartPromises);
+        
+        // Map symbol to its chart points array
+        const symbolCharts = {};
+        positions.forEach((pos, idx) => {
+          const data = chartsResults[idx];
+          if (Array.isArray(data) && data.length > 0) {
+            symbolCharts[pos.symbol] = data;
+          }
+        });
+
+        // Use the first available position's timeline as base timestamps
+        const baseSymbol = positions[0].symbol;
+        const basePoints = symbolCharts[baseSymbol] || [];
+
+        if (basePoints.length === 0) {
+          const cashVal = selectedDashboardPortfolio.cashBalance || 0;
+          const fallbackPoints = Array.from({ length: 30 }, (_, i) => ({ time: `T${i}`, value: cashVal }));
+          if (!isCancelled) setPortfolioChartData(fallbackPoints);
+          setPortfolioChartLoading(false);
+          return;
+        }
+
+        const combined = basePoints.map((pt, idx) => {
+          let totalValDKK = selectedDashboardPortfolio.cashBalance || 0;
+
+          positions.forEach(pos => {
+            const symChart = symbolCharts[pos.symbol];
+            const pointPrice = (symChart && symChart[idx]) ? symChart[idx].price : pos.avgPrice;
+            const currency = pos.currency || (pos.symbol.endsWith('.CO') ? 'DKK' : 'USD');
+            const fxRate = FX_RATES_TO_DKK[currency] || 1.0;
+            totalValDKK += pos.shares * pointPrice * fxRate;
+          });
+
+          return {
+            time: pt.time,
+            value: parseFloat(totalValDKK.toFixed(2))
+          };
+        });
+
+        if (!isCancelled) {
+          setPortfolioChartData(combined);
+        }
+      } catch (err) {
+        console.error('Portfolio chart computation error:', err);
+      } finally {
+        if (!isCancelled) setPortfolioChartLoading(false);
+      }
+    };
+
+    computePortfolioChart();
+    return () => { isCancelled = true; };
+  }, [selectedDashboardPortfolio, portfolioTimeframe]);
+
+  // Batch load live prices for held assets
   useEffect(() => {
     const heldSymbols = (activePortfolio?.positions || []).map(p => p.symbol).filter(Boolean);
     if (heldSymbols.length === 0) return;
@@ -345,18 +459,6 @@ export default function App() {
     const changePercent = firstPrice > 0 ? (change / firstPrice) * 100 : 0;
     return { change, changePercent };
   }, [chartData, quote]);
-
-  const fetchLeaderboard = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/leaderboard`);
-      if (res.ok) {
-        const data = await res.json();
-        setLeaderboard(Array.isArray(data) ? data : []);
-      }
-    } catch (e) {
-      console.error('Leaderboard error:', e);
-    }
-  };
 
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -512,7 +614,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2 text-xs font-mono">
             <Server className="w-3.5 h-3.5 text-slate-400" />
-            <span className={apiStatus.includes('ONLINE') ? 'text-emerald-700 font-medium' : 'text-amber-700'}>
+            <span className={isBackendConnected ? 'text-emerald-700 font-medium' : 'text-amber-700'}>
               API: {apiStatus}
             </span>
           </div>
@@ -737,6 +839,80 @@ export default function App() {
               </div>
             </div>
 
+            {/* Combined Portfolio Performance Chart Section */}
+            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+              <div className="flex flex-wrap justify-between items-center gap-4 mb-5 border-b border-slate-100 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-slate-100 rounded-lg text-slate-900">
+                    <TrendingUp className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-semibold text-slate-950">Samlet Porteføljeudvikling</h3>
+                    <p className="text-xs text-slate-600">Historisk markedsværdi af det valgte handelsbord i DKK</p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <select
+                    aria-label="Dashboard Portfolio Selector"
+                    value={dashboardPortfolioId || activePortfolioId || ''}
+                    onChange={(e) => setDashboardPortfolioId(e.target.value)}
+                    className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-semibold text-slate-900 focus:outline-none"
+                  >
+                    {portfolios.map(p => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+
+                  <div className="flex gap-1 bg-slate-100 p-0.5 rounded-md">
+                    {TIMEFRAMES.map(tf => (
+                      <button
+                        key={tf}
+                        onClick={() => setPortfolioTimeframe(tf)}
+                        className={`px-2.5 py-1 text-[11px] font-mono font-medium rounded transition ${
+                          portfolioTimeframe === tf ? 'bg-white text-slate-950 font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {tf}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="h-72 w-full">
+                {portfolioChartLoading ? (
+                  <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2 text-xs font-mono">
+                    <RefreshCw className="w-5 h-5 animate-spin" />
+                    Beregner samlet porteføljetidslinje...
+                  </div>
+                ) : portfolioChartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={portfolioChartData}>
+                      <defs>
+                        <linearGradient id="colorPort" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#0F172A" stopOpacity={0.18}/>
+                          <stop offset="95%" stopColor="#0F172A" stopOpacity={0.0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" vertical={false} />
+                      <XAxis dataKey="time" stroke="#94A3B8" fontSize={10} tickLine={false} />
+                      <YAxis domain={['auto', 'auto']} stroke="#94A3B8" fontSize={10} tickLine={false} tickFormatter={(v) => `${(v/1000).toFixed(0)}k kr.`} />
+                      <RechartsTooltip
+                        formatter={(val) => [formatDKK(val), 'Samlet Værdi']}
+                        contentStyle={{ backgroundColor: '#0F172A', borderRadius: '6px', border: 'none', color: '#fff', fontSize: '11px', fontFamily: 'monospace' }}
+                      />
+                      <Area type="monotone" dataKey="value" stroke="#0F172A" strokeWidth={2.5} fillOpacity={1} fill="url(#colorPort)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full flex items-center justify-center text-slate-400 text-xs font-mono">
+                    Ingen tidslinjedata tilgængelig for dette bord
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
                 <div className="flex justify-between items-center mb-5">
@@ -943,10 +1119,10 @@ export default function App() {
 
                   <div className="text-right font-mono">
                     <div className="text-3xl font-bold text-slate-950">
-                      {quote?.price ? formatNativePrice(quote.price, activeCurrency) : 'Indlæser...'}
+                      {formatNativePrice(quote?.price, activeCurrency)}
                     </div>
                     <div className="text-xs font-mono text-slate-500">
-                      {quote?.price ? `≈ ${formatDKK(quote.price * assetFxRate)}` : ''}
+                      ≈ {formatDKK((quote?.price || 0) * assetFxRate)}
                     </div>
                     <div className={`text-xs font-semibold flex items-center justify-end gap-1 mt-1 ${
                       timeframeReturn.change >= 0 ? 'text-emerald-700' : 'text-rose-700'
