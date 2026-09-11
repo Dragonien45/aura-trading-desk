@@ -19,6 +19,7 @@ const FX_RATES_TO_DKK = {
   'NOK': 0.64
 };
 
+// Persistent In-Memory Store
 globalThis.__AURA_DB = globalThis.__AURA_DB || {
   users: [],
   portfolios: [],
@@ -27,6 +28,7 @@ globalThis.__AURA_DB = globalThis.__AURA_DB || {
 };
 const memoryDb = globalThis.__AURA_DB;
 
+// PostgreSQL Connection Pool
 const dbUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL;
 let pool = null;
 
@@ -69,6 +71,7 @@ async function initDb() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(portfolio_id, symbol)
       );
+      ALTER TABLE positions ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'USD';
       CREATE TABLE IF NOT EXISTS transactions (
         id TEXT PRIMARY KEY,
         portfolio_id TEXT REFERENCES portfolios(id) ON DELETE CASCADE,
@@ -80,6 +83,7 @@ async function initDb() {
         currency TEXT DEFAULT 'USD',
         executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+      ALTER TABLE transactions ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'USD';
     `);
   } catch (err) {
     console.error('Database schema error:', err.message);
@@ -392,7 +396,6 @@ router.post('/portfolios/trade', async (req, res) => {
     const curr = currency || (upperSym.endsWith('.CO') ? 'DKK' : 'USD');
     const fxRate = FX_RATES_TO_DKK[curr] || 6.85;
 
-    // Use totalDKK from frontend if provided, otherwise compute securely with FX rate
     const costDKK = totalDKK !== undefined ? parseFloat(totalDKK) : (qty * execPrice * fxRate);
 
     if (pool) {
@@ -406,7 +409,7 @@ router.post('/portfolios/trade', async (req, res) => {
 
       if (type === 'BUY') {
         if (cash < costDKK) return res.status(400).json({ error: 'Insufficient DKK cash reserves' });
-        cash -= costDKK; // Correctly deducts full converted Kroner amount
+        cash -= costDKK;
         if (pos) {
           const oldShares = parseFloat(pos.shares);
           const oldAvg = parseFloat(pos.avg_price);
@@ -425,7 +428,7 @@ router.post('/portfolios/trade', async (req, res) => {
         }
       } else if (type === 'SELL') {
         if (!pos || parseFloat(pos.shares) < qty) return res.status(400).json({ error: 'Insufficient shares held' });
-        cash += costDKK; // Correctly credits full converted Kroner amount
+        cash += costDKK;
         const remaining = parseFloat(pos.shares) - qty;
         if (remaining <= 0.00001) {
           await pool.query('DELETE FROM positions WHERE id = $1', [pos.id]);
@@ -458,6 +461,7 @@ router.post('/portfolios/trade', async (req, res) => {
           const newQty = pos.shares + qty;
           pos.avg_price = (pos.shares * pos.avg_price + execPrice) / newQty;
           pos.shares = newQty;
+          pos.currency = curr;
         } else {
           memoryDb.positions.push({
             id: 'pos_' + crypto.randomUUID().slice(0, 8),
