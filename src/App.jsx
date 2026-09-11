@@ -33,27 +33,17 @@ const API_BASE = typeof window !== 'undefined' && window.location.origin.include
   : 'https://aura-trading-desk-ten.vercel.app/api';
 
 const QUICK_ASSETS = [
-  { symbol: 'AAPL', label: 'Apple', basePrice: 224.23, currency: 'USD' },
-  { symbol: 'NVDA', label: 'NVIDIA', basePrice: 119.85, currency: 'USD' },
-  { symbol: 'TSLA', label: 'Tesla', basePrice: 245.10, currency: 'USD' },
-  { symbol: 'XPEV', label: 'XPENG', basePrice: 19.34, currency: 'USD' },
-  { symbol: 'VWS.CO', label: 'Vestas', basePrice: 154.20, currency: 'DKK' },
-  { symbol: 'SPY', label: 'S&P 500', basePrice: 561.40, currency: 'USD' },
-  { symbol: 'BTC-USD', label: 'Bitcoin', basePrice: 62450.00, currency: 'USD' },
-  { symbol: 'ETH-USD', label: 'Ethereum', basePrice: 2480.00, currency: 'USD' }
+  { symbol: 'AAPL', label: 'Apple' },
+  { symbol: 'NVDA', label: 'NVIDIA' },
+  { symbol: 'TSLA', label: 'Tesla' },
+  { symbol: 'XPEV', label: 'XPENG' },
+  { symbol: 'VWS.CO', label: 'Vestas' },
+  { symbol: 'SPY', label: 'S&P 500' },
+  { symbol: 'BTC-USD', label: 'Bitcoin' },
+  { symbol: 'ETH-USD', label: 'Ethereum' }
 ];
 
 const TIMEFRAMES = ['1D', '1W', '1M', '1Y'];
-
-// FX Conversion Rates to Danish Kroner (DKK)
-const FX_RATES_TO_DKK = {
-  'DKK': 1.0,
-  'USD': 6.85,
-  'EUR': 7.46,
-  'GBP': 8.85,
-  'SEK': 0.65,
-  'NOK': 0.64
-};
 
 const formatDKK = (amount) => {
   const val = Number(amount) || 0;
@@ -114,6 +104,9 @@ export default function App() {
   const [marketLoading, setMarketLoading] = useState(false);
   const [heldLiveQuotes, setHeldLiveQuotes] = useState({});
 
+  // Live real-time scraped FX rate state
+  const [liveFxRate, setLiveFxRate] = useState(6.85);
+
   // Order ticket state with dual-mode sizing
   const [orderType, setOrderType] = useState('BUY');
   const [orderShares, setOrderShares] = useState('');
@@ -130,7 +123,23 @@ export default function App() {
 
   const activeCurrency = quote?.currency || (selectedSymbol?.endsWith('.CO') ? 'DKK' : 'USD');
   const activeCurrencySymbol = activeCurrency === 'USD' ? '$' : activeCurrency === 'EUR' ? '€' : activeCurrency === 'GBP' ? '£' : 'kr.';
-  const assetFxRate = FX_RATES_TO_DKK[activeCurrency] || 6.85;
+
+  useEffect(() => {
+    if (activeCurrency === 'DKK') {
+      setLiveFxRate(1.0);
+      return;
+    }
+    let isCancelled = false;
+    fetch(`${API_BASE}/markets/quote/${activeCurrency}DKK=X`)
+      .then(res => res.json())
+      .then(data => {
+        if (!isCancelled && data && data.price > 0) {
+          setLiveFxRate(data.price);
+        }
+      })
+      .catch(() => {});
+    return () => { isCancelled = true; };
+  }, [activeCurrency]);
 
   const handleSharesChange = (val) => {
     setOrderShares(val);
@@ -154,8 +163,8 @@ export default function App() {
   };
 
   const applyCashPercentage = (pct) => {
-    if (!activePortfolio?.cashBalance || !quote?.price || !assetFxRate) return;
-    const availableInNative = activePortfolio.cashBalance / assetFxRate;
+    if (!activePortfolio?.cashBalance || !quote?.price || !liveFxRate) return;
+    const availableInNative = activePortfolio.cashBalance / liveFxRate;
     const targetNative = availableInNative * (pct / 100);
     handleNativeAmountChange(targetNative.toFixed(2));
     setInputMode('native');
@@ -229,7 +238,6 @@ export default function App() {
     }
   }, [user]);
 
-  // Live Debounced Yahoo Search
   useEffect(() => {
     if (!searchQuery || searchQuery.trim().length < 2) {
       setSearchResults([]);
@@ -308,7 +316,6 @@ export default function App() {
     return portfolios.find(p => p.id === dashboardPortfolioId) || activePortfolio;
   }, [portfolios, dashboardPortfolioId, activePortfolio]);
 
-  // Fetch and compute combined portfolio chart data
   useEffect(() => {
     if (!selectedDashboardPortfolio) return;
     let isCancelled = false;
@@ -361,7 +368,7 @@ export default function App() {
             const symChart = symbolCharts[pos.symbol];
             const pointPrice = (symChart && symChart[idx]) ? symChart[idx].price : pos.avgPrice;
             const currency = pos.currency || (pos.symbol.endsWith('.CO') ? 'DKK' : 'USD');
-            const fxRate = FX_RATES_TO_DKK[currency] || 1.0;
+            const fxRate = currency === 'DKK' ? 1.0 : liveFxRate;
             totalValDKK += pos.shares * pointPrice * fxRate;
           });
 
@@ -383,9 +390,8 @@ export default function App() {
 
     computePortfolioChart();
     return () => { isCancelled = true; };
-  }, [selectedDashboardPortfolio, portfolioTimeframe]);
+  }, [selectedDashboardPortfolio, portfolioTimeframe, liveFxRate]);
 
-  // Batch load live prices for held assets
   useEffect(() => {
     const heldSymbols = (activePortfolio?.positions || []).map(p => p.symbol).filter(Boolean);
     if (heldSymbols.length === 0) return;
@@ -411,7 +417,7 @@ export default function App() {
       const liveData = heldLiveQuotes[pos.symbol] || (selectedSymbol === pos.symbol ? quote : null);
       const livePrice = liveData?.price || pos.avgPrice;
       const currency = pos.currency || liveData?.currency || (pos.symbol.endsWith('.CO') ? 'DKK' : 'USD');
-      const fxRate = FX_RATES_TO_DKK[currency] || 1.0;
+      const fxRate = currency === 'DKK' ? 1.0 : liveFxRate;
 
       const marketValNative = pos.shares * livePrice;
       const marketValDKK = marketValNative * fxRate;
@@ -440,11 +446,10 @@ export default function App() {
     const unrealizedGainPct = totalCostBasisDKK > 0 ? (unrealizedGainDKK / totalCostBasisDKK) * 100 : 0;
 
     return { totalMarketValueDKK, unrealizedGainDKK, unrealizedGainPct, items };
-  }, [activePortfolio, heldLiveQuotes, quote, selectedSymbol]);
+  }, [activePortfolio, heldLiveQuotes, quote, selectedSymbol, liveFxRate]);
 
   const totalEquity = (activePortfolio?.cashBalance || 0) + (holdingsCalculations.totalMarketValueDKK || 0);
 
-  // Timeframe-aware return calculation for the selected chart
   const timeframeReturn = useMemo(() => {
     if (!chartData || chartData.length < 2) {
       return { change: quote?.change || 0, changePercent: quote?.changePercent || 0 };
@@ -501,7 +506,7 @@ export default function App() {
 
     const totalNative = qty * quote.price;
     const curr = activeCurrency;
-    const totalDKK = totalNative * assetFxRate;
+    const totalDKK = totalNative * liveFxRate;
 
     if (orderType === 'BUY' && totalDKK > activePortfolio.cashBalance) {
       setOrderStatus({ 
@@ -525,7 +530,7 @@ export default function App() {
           price: quote.price,
           currency: curr,
           totalDKK: totalDKK,
-          totalValue: totalDKK // FIX: Pass totalDKK as totalValue so backend PostgreSQL correctly debits/credits cash balance in DKK
+          totalValue: totalDKK
         })
       });
       const data = await res.json();
@@ -1101,6 +1106,9 @@ export default function App() {
                       <span className="text-xs font-mono font-bold px-2 py-0.5 bg-slate-100 text-slate-700 rounded">
                         {activeCurrency}
                       </span>
+                      <span className="text-[10px] font-mono bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded">
+                        1 {activeCurrency} = {liveFxRate.toFixed(2)} DKK (Live)
+                      </span>
                       <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded-full font-semibold ${
                         quote?.isLive ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'
                       }`}>
@@ -1118,7 +1126,7 @@ export default function App() {
                       {formatNativePrice(quote?.price, activeCurrency)}
                     </div>
                     <div className="text-xs font-mono text-slate-500">
-                      ≈ {formatDKK((quote?.price || 0) * assetFxRate)}
+                      ≈ {formatDKK((quote?.price || 0) * liveFxRate)}
                     </div>
                     <div className={`text-xs font-semibold flex items-center justify-end gap-1 mt-1 ${
                       timeframeReturn.change >= 0 ? 'text-emerald-700' : 'text-rose-700'
@@ -1328,9 +1336,9 @@ export default function App() {
                       </span>
                     </div>
                     <div className="flex justify-between text-slate-600">
-                      <span>Afregnes i DKK:</span>
+                      <span>Afregnes i DKK (Live kurs {liveFxRate.toFixed(2)}):</span>
                       <span className="font-bold text-slate-950">
-                        {formatDKK((parseFloat(orderShares) || 0) * (quote?.price || 0) * assetFxRate)}
+                        {formatDKK((parseFloat(orderShares) || 0) * (quote?.price || 0) * liveFxRate)}
                       </span>
                     </div>
                   </div>
