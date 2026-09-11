@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -22,20 +22,22 @@ import {
   LogOut,
   Building2,
   Activity,
-  Server
+  Server,
+  Globe2,
+  ArrowRight
 } from 'lucide-react';
 
 const API_BASE = '/api';
 
-const WATCHLIST_SYMBOLS = [
-  { symbol: 'AAPL', name: 'Apple Inc.', sector: 'Technology' },
-  { symbol: 'MSFT', name: 'Microsoft Corporation', sector: 'Technology' },
-  { symbol: 'NVDA', name: 'NVIDIA Corporation', sector: 'Semiconductors' },
-  { symbol: 'TSLA', name: 'Tesla, Inc.', sector: 'Automotive' },
-  { symbol: 'SPY', name: 'SPDR S&P 500 ETF Trust', sector: 'Index ETF' },
-  { symbol: 'QQQ', name: 'Invesco QQQ Trust', sector: 'Tech ETF' },
-  { symbol: 'BTC-USD', name: 'Bitcoin USD', sector: 'Digital Assets' },
-  { symbol: 'ETH-USD', name: 'Ethereum USD', sector: 'Digital Assets' }
+const QUICK_ASSETS = [
+  { symbol: 'AAPL', label: 'Apple' },
+  { symbol: 'NVDA', label: 'NVIDIA' },
+  { symbol: 'TSLA', label: 'Tesla' },
+  { symbol: 'XPEV', label: 'XPENG' },
+  { symbol: 'VWS.CO', label: 'Vestas' },
+  { symbol: 'SPY', label: 'S&P 500' },
+  { symbol: 'BTC-USD', label: 'Bitcoin' },
+  { symbol: 'ETH-USD', label: 'Ethereum' }
 ];
 
 const TIMEFRAMES = ['1D', '1W', '1M', '1Y'];
@@ -62,13 +64,17 @@ export default function App() {
   const [activePortfolioId, setActivePortfolioId] = useState(null);
   const [portfolioLoading, setPortfolioLoading] = useState(false);
 
+  // Global search & asset state
   const [selectedSymbol, setSelectedSymbol] = useState('AAPL');
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
   const [searchFocused, setSearchFocused] = useState(false);
+  const [searchSearching, setSearchSearching] = useState(false);
   const [activeTimeframe, setActiveTimeframe] = useState('1M');
   const [quote, setQuote] = useState(null);
   const [chartData, setChartData] = useState([]);
   const [marketLoading, setMarketLoading] = useState(false);
+  const [heldLiveQuotes, setHeldLiveQuotes] = useState({});
 
   const [orderType, setOrderType] = useState('BUY');
   const [orderShares, setOrderShares] = useState('');
@@ -78,6 +84,8 @@ export default function App() {
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState('');
   const [leaderboard, setLeaderboard] = useState([]);
+
+  const searchBoxRef = useRef(null);
 
   const checkHealth = async () => {
     try {
@@ -130,6 +138,47 @@ export default function App() {
     }
   }, [user]);
 
+  // Live Debounced Yahoo Search
+  useEffect(() => {
+    if (!searchQuery || searchQuery.trim().length < 2) {
+      setSearchResults([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setSearchSearching(true);
+      try {
+        const res = await fetch(`${API_BASE}/markets/search?q=${encodeURIComponent(searchQuery.trim())}`);
+        if (res.ok) {
+          const data = await res.json();
+          setSearchResults(Array.isArray(data) ? data : []);
+        }
+      } catch (err) {
+        console.error('Search error:', err);
+      } finally {
+        setSearchSearching(false);
+      }
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const selectAsset = (sym) => {
+    if (!sym) return;
+    const clean = sym.trim().toUpperCase();
+    setSelectedSymbol(clean);
+    setSearchQuery('');
+    setSearchResults([]);
+    setSearchFocused(false);
+  };
+
+  const handleSearchSubmit = (e) => {
+    e.preventDefault();
+    if (searchResults.length > 0) {
+      selectAsset(searchResults[0].symbol);
+    } else if (searchQuery.trim()) {
+      selectAsset(searchQuery.trim().toUpperCase());
+    }
+  };
+
   const fetchMarketData = async (symbol, range = activeTimeframe) => {
     setMarketLoading(true);
     try {
@@ -158,22 +207,25 @@ export default function App() {
     }
   }, [selectedSymbol, activeTimeframe, user]);
 
-  const fetchLeaderboard = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/leaderboard`);
-      if (res.ok) {
-        const data = await res.json();
-        setLeaderboard(Array.isArray(data) ? data : []);
-      }
-    } catch (e) {
-      console.error('Leaderboard error:', e);
-    }
-  };
-
   const activePortfolio = useMemo(() => {
     if (!portfolios || portfolios.length === 0) return null;
     return portfolios.find(p => p.id === activePortfolioId) || portfolios[0];
   }, [portfolios, activePortfolioId]);
+
+  // Batch load live prices for held assets to display accurate mark-to-market valuations
+  useEffect(() => {
+    const heldSymbols = (activePortfolio?.positions || []).map(p => p.symbol).filter(Boolean);
+    if (heldSymbols.length === 0) return;
+
+    fetch(`${API_BASE}/markets/quotes?symbols=${encodeURIComponent(heldSymbols.join(','))}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data && typeof data === 'object') {
+          setHeldLiveQuotes(data);
+        }
+      })
+      .catch(() => {});
+  }, [activePortfolio]);
 
   const holdingsCalculations = useMemo(() => {
     if (!activePortfolio) {
@@ -183,7 +235,9 @@ export default function App() {
     let totalCostBasis = 0;
 
     const items = (activePortfolio.positions || []).map(pos => {
-      const livePrice = (selectedSymbol === pos.symbol && quote?.price) ? quote.price : pos.avgPrice;
+      const liveData = heldLiveQuotes[pos.symbol] || (selectedSymbol === pos.symbol ? quote : null);
+      const livePrice = liveData?.price || pos.avgPrice;
+      const currency = liveData?.currency || (pos.symbol.endsWith('.CO') ? 'DKK' : 'USD');
       const mVal = pos.shares * livePrice;
       const cost = pos.shares * pos.avgPrice;
       const gain = mVal - cost;
@@ -195,6 +249,7 @@ export default function App() {
       return {
         ...pos,
         livePrice,
+        currency,
         marketValue: mVal,
         gain,
         gainPct
@@ -205,9 +260,21 @@ export default function App() {
     const unrealizedGainPct = totalCostBasis > 0 ? (unrealizedGain / totalCostBasis) * 100 : 0;
 
     return { totalMarketValue, unrealizedGain, unrealizedGainPct, items };
-  }, [activePortfolio, quote, selectedSymbol]);
+  }, [activePortfolio, heldLiveQuotes, quote, selectedSymbol]);
 
   const totalEquity = (activePortfolio?.cashBalance || 0) + (holdingsCalculations.totalMarketValue || 0);
+
+  const fetchLeaderboard = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/leaderboard`);
+      if (res.ok) {
+        const data = await res.json();
+        setLeaderboard(Array.isArray(data) ? data : []);
+      }
+    } catch (e) {
+      console.error('Leaderboard error:', e);
+    }
+  };
 
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -278,7 +345,10 @@ export default function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Order execution rejected');
 
-      setOrderStatus({ type: 'success', message: `Executed ${orderType} ${qty} ${quote.symbol} @ $${quote.price.toFixed(2)}` });
+      setOrderStatus({
+        type: 'success',
+        message: `Executed ${orderType} ${qty} ${quote.symbol} @ ${quote.price.toFixed(2)} ${quote.currency || 'USD'}`
+      });
       setOrderShares('');
       await refreshUserData(user.id);
       await fetchLeaderboard();
@@ -325,16 +395,11 @@ export default function App() {
     }
   };
 
-  const filteredSymbols = WATCHLIST_SYMBOLS.filter(s =>
-    s.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    s.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
   const allocationData = useMemo(() => {
     if (!activePortfolio) return [];
     const cash = activePortfolio.cashBalance || 0;
     const data = [{ name: 'Cash Reserves', value: cash, color: '#0F172A' }];
-    const colors = ['#2563EB', '#0D9488', '#F59E0B', '#8B5CF6', '#EC4899', '#10B981'];
+    const colors = ['#2563EB', '#0D9488', '#F59E0B', '#8B5CF6', '#EC4899', '#10B981', '#6366F1'];
 
     (holdingsCalculations.items || []).forEach((pos, idx) => {
       data.push({
@@ -372,7 +437,7 @@ export default function App() {
           </div>
           <h2 className="text-xl font-semibold text-slate-900 text-center">Institutional Terminal Access</h2>
           <p className="text-xs text-slate-500 text-center mt-1 mb-6">
-            Paper trading platform backed by PostgreSQL with live market feeds.
+            Global market desk integrated directly with Yahoo Finance feeds.
           </p>
 
           <div className="grid grid-cols-2 bg-slate-100 p-1 rounded-lg mb-6">
@@ -433,7 +498,7 @@ export default function App() {
               {authLoading ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
-                  Connecting to PostgreSQL...
+                  Authenticating...
                 </>
               ) : (
                 authMode === 'login' ? 'Authenticate Access' : 'Register Profile in Database'
@@ -621,7 +686,10 @@ export default function App() {
                       ) : (
                         holdingsCalculations.items.map(pos => (
                           <tr key={pos.id || pos.symbol} className="hover:bg-slate-50 transition">
-                            <td className="py-3.5 font-bold text-slate-950">{pos.symbol}</td>
+                            <td className="py-3.5 font-bold text-slate-950">
+                              {pos.symbol}
+                              <span className="ml-1 text-[10px] text-slate-400 font-normal">({pos.currency})</span>
+                            </td>
                             <td className="py-3.5 text-right text-slate-800">{pos.shares.toLocaleString()}</td>
                             <td className="py-3.5 text-right text-slate-800">${(pos.avgPrice || 0).toFixed(2)}</td>
                             <td className="py-3.5 text-right font-medium text-slate-950">${(pos.livePrice || 0).toFixed(2)}</td>
@@ -632,7 +700,7 @@ export default function App() {
                             <td className="py-3.5 text-right">
                               <button
                                 onClick={() => {
-                                  setSelectedSymbol(pos.symbol);
+                                  selectAsset(pos.symbol);
                                   setActiveTab('markets');
                                 }}
                                 className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-900 rounded font-semibold text-[11px] transition"
@@ -703,53 +771,89 @@ export default function App() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-6">
               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
-                <div className="relative mb-5">
-                  <div className="flex items-center bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-                    <Search className="w-4 h-4 text-slate-500 mr-2" />
+                {/* Global Search Bar */}
+                <div className="relative mb-3" ref={searchBoxRef}>
+                  <form onSubmit={handleSearchSubmit} className="flex items-center bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 focus-within:ring-2 focus-within:ring-slate-950 focus-within:bg-white transition">
+                    <Search className="w-4 h-4 text-slate-500 mr-2 shrink-0" />
                     <input
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       onFocus={() => setSearchFocused(true)}
-                      placeholder="Search asset symbol (e.g. AAPL, NVDA, SPY, BTC-USD)..."
+                      placeholder="Search any global stock, crypto, or ETF (e.g. Vestas, XPENG, VWS.CO, XPEV, NVDA)..."
                       className="bg-transparent text-xs w-full focus:outline-none font-mono"
                     />
-                  </div>
+                    {searchSearching && <RefreshCw className="w-3.5 h-3.5 text-slate-400 animate-spin mr-2" />}
+                    <button
+                      type="submit"
+                      className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 text-white rounded text-[11px] font-semibold flex items-center gap-1 shrink-0"
+                    >
+                      <span>Load</span>
+                      <ArrowRight className="w-3 h-3" />
+                    </button>
+                  </form>
 
-                  {searchFocused && (
-                    <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-20 max-h-48 overflow-y-auto">
-                      {filteredSymbols.map(s => (
+                  {/* Yahoo Autocomplete Dropdown */}
+                  {searchFocused && searchResults.length > 0 && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-30 max-h-64 overflow-y-auto">
+                      {searchResults.map(s => (
                         <div
                           key={s.symbol}
-                          onMouseDown={() => {
-                            setSelectedSymbol(s.symbol);
-                            setSearchQuery('');
-                            setSearchFocused(false);
-                          }}
-                          className="px-4 py-2.5 hover:bg-slate-50 cursor-pointer flex justify-between items-center text-xs"
+                          onMouseDown={() => selectAsset(s.symbol)}
+                          className="px-4 py-2.5 hover:bg-slate-50 cursor-pointer flex justify-between items-center text-xs border-b border-slate-50 last:border-none"
                         >
-                          <div>
-                            <span className="font-bold font-mono text-slate-900 mr-2">{s.symbol}</span>
-                            <span className="text-slate-600">{s.name}</span>
+                          <div className="flex flex-col">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold font-mono text-slate-900 text-sm">{s.symbol}</span>
+                              <span className="text-[10px] font-mono bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">{s.exchange}</span>
+                            </div>
+                            <span className="text-slate-600 text-[11px] truncate max-w-sm">{s.name}</span>
                           </div>
-                          <span className="text-[10px] font-mono text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">{s.sector}</span>
+                          <span className="text-[10px] font-mono text-slate-400 uppercase">{s.type}</span>
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
 
+                {/* Popular Quick Select Assets */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-3 mb-4 text-xs font-mono">
+                  <span className="text-slate-400 text-[11px] mr-1 flex items-center gap-1">
+                    <Globe2 className="w-3 h-3" /> Quick:
+                  </span>
+                  {QUICK_ASSETS.map(item => (
+                    <button
+                      key={item.symbol}
+                      onClick={() => selectAsset(item.symbol)}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition border shrink-0 ${
+                        selectedSymbol === item.symbol
+                          ? 'bg-slate-950 text-white border-slate-950'
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {item.label} ({item.symbol})
+                    </button>
+                  ))}
+                </div>
+
+                {/* Quote Header */}
                 <div className="flex flex-wrap justify-between items-end gap-4 border-b border-slate-100 pb-5">
                   <div>
                     <div className="flex items-center gap-3">
                       <h2 className="text-2xl font-bold font-mono text-slate-950">{quote?.symbol || selectedSymbol}</h2>
+                      <span className="text-xs font-mono font-bold px-2 py-0.5 bg-slate-100 text-slate-700 rounded">
+                        {quote?.currency || 'USD'}
+                      </span>
                       <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded-full font-semibold ${
                         quote?.isLive ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'
                       }`}>
                         {quote?.marketState === 'REGULAR' ? 'Live Market' : 'Off-Hours / Closed'}
                       </span>
                     </div>
-                    <p className="text-xs text-slate-600 mt-0.5">{quote?.name}</p>
+                    <p className="text-xs text-slate-600 mt-0.5">{quote?.name || selectedSymbol}</p>
+                    {quote?.exchangeName && (
+                      <p className="text-[10px] font-mono text-slate-400 mt-0.5">Exchange: {quote.exchangeName}</p>
+                    )}
                   </div>
 
                   <div className="text-right font-mono">
@@ -764,6 +868,7 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Timeframe Controls */}
                 <div className="flex justify-between items-center mt-5 mb-3">
                   <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600">Yahoo Historical Candlesticks</div>
                   <div className="flex gap-1 bg-slate-100 p-0.5 rounded-md">
@@ -781,11 +886,12 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Historical Area Chart */}
                 <div className="h-72 w-full">
                   {marketLoading ? (
                     <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2 text-xs font-mono">
                       <RefreshCw className="w-5 h-5 animate-spin" />
-                      Fetching Real-Time Market Data...
+                      Streaming Yahoo Finance Market Candles...
                     </div>
                   ) : chartData.length > 0 ? (
                     <ResponsiveContainer width="100%" height="100%">
@@ -815,6 +921,7 @@ export default function App() {
               </div>
             </div>
 
+            {/* Execution Order Ticket */}
             <div className="space-y-6">
               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
                 <h3 className="text-base font-semibold text-slate-950 mb-1">Execution Ticket</h3>
@@ -855,7 +962,9 @@ export default function App() {
                     </label>
                     <div className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-900 flex justify-between items-center">
                       <span>{quote?.symbol || selectedSymbol}</span>
-                      <span className="font-normal text-slate-600">${quote?.price ? quote.price.toFixed(2) : '0.00'}</span>
+                      <span className="font-normal text-slate-600">
+                        {quote?.price ? `${quote.price.toFixed(2)} ${quote.currency || 'USD'}` : '0.00'}
+                      </span>
                     </div>
                   </div>
 
