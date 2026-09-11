@@ -136,7 +136,9 @@ function fetchYahooQuote(symbol) {
     if (cached && Date.now() - cached.timestamp < 3000) return resolve(cached.data);
 
     const session = await getYahooSession();
-    let path = `/v8/finance/chart/${encodeURIComponent(clean)}?interval=15m&range=1d`;
+    // For forex tickers like USDDKK=X, use a 1d range with 1m/5m interval to get live spot ticks
+    const range = clean.endsWith('=X') ? '1d' : '1d';
+    let path = `/v8/finance/chart/${encodeURIComponent(clean)}?interval=5m&range=${range}`;
     if (session.crumb) path += `&crumb=${encodeURIComponent(session.crumb)}`;
 
     const headers = { 'User-Agent': USER_AGENT, 'Accept': 'application/json' };
@@ -148,17 +150,28 @@ function fetchYahooQuote(symbol) {
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
-          const meta = parsed.chart?.result?.[0]?.meta;
-          if (meta) {
-            const price = meta.regularMarketPrice || meta.chartPreviousClose || 0;
+          const chartResult = parsed.chart?.result?.[0];
+          const meta = chartResult?.meta;
+          const quotes = chartResult?.indicators?.quote?.[0]?.close || [];
+          
+          // Extract the absolute latest valid price point from quotes array (critical for forex =X tickers)
+          const validQuotes = quotes.filter(q => q !== null && !isNaN(q));
+          const latestQuotePrice = validQuotes.length > 0 ? validQuotes[validQuotes.length - 1] : null;
+
+          if (meta || latestQuotePrice) {
+            const regularPrice = meta?.regularMarketPrice;
+            const price = (typeof regularPrice === 'number' && regularPrice > 0)
+              ? regularPrice
+              : (latestQuotePrice || meta?.chartPreviousClose || meta?.previousClose || 0);
+
             if (price > 0) {
-              const prev = meta.chartPreviousClose || price;
+              const prev = meta?.chartPreviousClose || meta?.previousClose || price;
               const change = price - prev;
               const result = {
                 symbol: clean,
-                name: meta.shortName || meta.longName || clean,
-                currency: meta.currency || (clean.endsWith('.CO') ? 'DKK' : 'USD'),
-                exchangeName: meta.exchangeName || '',
+                name: meta?.shortName || meta?.longName || clean,
+                currency: meta?.currency || (clean.endsWith('.CO') ? 'DKK' : clean.endsWith('=X') ? clean.slice(3, 6) : 'USD'),
+                exchangeName: meta?.exchangeName || '',
                 price: parseFloat(price.toFixed(4)),
                 change: parseFloat(change.toFixed(4)),
                 changePercent: parseFloat(((change / prev) * 100).toFixed(2)),
@@ -188,7 +201,7 @@ async function getLiveFxRateToDKK(currency) {
   if (quote && quote.price > 0) {
     return quote.price;
   }
-  return cleanCurr === 'USD' ? 6.85 : 7.46; // Ultimate fallback only if forex feed times out
+  return cleanCurr === 'USD' ? 6.85 : 7.46;
 }
 
 function searchYahoo(query) {
@@ -395,6 +408,7 @@ router.post('/portfolios/trade', async (req, res) => {
     const upperSym = symbol.toUpperCase();
     const curr = currency || (upperSym.endsWith('.CO') ? 'DKK' : 'USD');
     
+    // Fetch live real-time FX rate from Yahoo Finance forex feed right at trade execution
     const fxRate = await getLiveFxRateToDKK(curr);
     const costDKK = qty * execPrice * fxRate;
 
@@ -585,6 +599,7 @@ router.get('/leaderboard', async (req, res) => {
   }
 });
 
+app.app = app;
 app.use('/api', router);
 app.use('/', router);
 
