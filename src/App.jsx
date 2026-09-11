@@ -149,6 +149,18 @@ export default function App() {
   const activeCurrencySymbol = activeCurrency === 'USD' ? '$' : activeCurrency === 'EUR' ? '€' : activeCurrency === 'GBP' ? '£' : 'kr.';
   const assetFxRate = FX_RATES_TO_DKK[activeCurrency] || 6.85;
 
+  // Compute timeframe-aware percentage change based on active chart scale (1D, 1W, 1M, 1Y)
+  const timeframeChangeCalc = useMemo(() => {
+    if (!chartData || chartData.length === 0) {
+      return { change: quote?.change || 0, changePercent: quote?.changePercent || 0 };
+    }
+    const startPrice = chartData[0].price;
+    const endPrice = chartData[chartData.length - 1].price;
+    const change = endPrice - startPrice;
+    const changePercent = startPrice > 0 ? (change / startPrice) * 100 : 0;
+    return { change, changePercent };
+  }, [chartData, quote]);
+
   const handleSharesChange = (val) => {
     setOrderShares(val);
     const num = parseFloat(val);
@@ -960,9 +972,9 @@ export default function App() {
                       ≈ {formatDKK((quote?.price || 0) * assetFxRate)}
                     </div>
                     <div className={`text-xs font-semibold flex items-center justify-end gap-1 mt-1 ${
-                      (quote?.change || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                      (timeframeChangeCalc.change || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'
                     }`}>
-                      {(quote?.change || 0) >= 0 ? '+' : ''}{quote?.change?.toFixed(2)} ({(quote?.changePercent || 0) >= 0 ? '+' : ''}{quote?.changePercent?.toFixed(2)}%)
+                      {(timeframeChangeCalc.change || 0) >= 0 ? '+' : ''}{timeframeChangeCalc.change?.toFixed(2)} ({(timeframeChangeCalc.changePercent || 0) >= 0 ? '+' : ''}{timeframeChangeCalc.changePercent?.toFixed(2)}%)
                     </div>
                   </div>
                 </div>
