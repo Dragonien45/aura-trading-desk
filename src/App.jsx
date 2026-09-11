@@ -25,7 +25,8 @@ import {
   Server,
   Globe2,
   ArrowRight,
-  TrendingUp
+  TrendingUp,
+  Filter
 } from 'lucide-react';
 
 const API_BASE = typeof window !== 'undefined' && window.location.origin.includes('vercel.app') 
@@ -86,13 +87,11 @@ export default function App() {
   const [activePortfolioId, setActivePortfolioId] = useState(null);
   const [portfolioLoading, setPortfolioLoading] = useState(false);
 
-  // Dashboard portfolio chart selection
-  const [dashboardPortfolioId, setDashboardPortfolioId] = useState(null);
   const [portfolioTimeframe, setPortfolioTimeframe] = useState('1M');
   const [portfolioChartData, setPortfolioChartData] = useState([]);
   const [portfolioChartLoading, setPortfolioChartLoading] = useState(false);
+  const [holdingsFilter, setHoldingsFilter] = useState('all'); // 'all' | portfolioId
 
-  // Global search & live market state
   const [selectedSymbol, setSelectedSymbol] = useState('AAPL');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -104,13 +103,11 @@ export default function App() {
   const [marketLoading, setMarketLoading] = useState(false);
   const [heldLiveQuotes, setHeldLiveQuotes] = useState({});
 
-  // Real-time FX live rate state
   const [liveFxRate, setLiveFxRate] = useState(6.85);
 
-  // Order ticket state with dual-mode sizing
   const [orderType, setOrderType] = useState('BUY');
   const [orderShares, setOrderShares] = useState('');
-  const [inputMode, setInputMode] = useState('shares'); // 'shares' | 'native'
+  const [inputMode, setInputMode] = useState('shares');
   const [targetNativeAmount, setTargetNativeAmount] = useState('');
   const [orderStatus, setOrderStatus] = useState(null);
   const [tradeLoading, setTradeLoading] = useState(false);
@@ -222,7 +219,6 @@ export default function App() {
         if (portData.length > 0) {
           const defaultId = portData[0].id;
           setActivePortfolioId(prev => (prev && portData.some(p => p.id === prev) ? prev : defaultId));
-          setDashboardPortfolioId(prev => (prev && portData.some(p => p.id === prev) ? prev : defaultId));
         }
       }
     } catch (err) {
@@ -311,23 +307,25 @@ export default function App() {
     return portfolios.find(p => p.id === activePortfolioId) || portfolios[0];
   }, [portfolios, activePortfolioId]);
 
-  const selectedDashboardPortfolio = useMemo(() => {
-    if (!portfolios || portfolios.length === 0) return null;
-    return portfolios.find(p => p.id === dashboardPortfolioId) || activePortfolio;
-  }, [portfolios, dashboardPortfolioId, activePortfolio]);
+  const handlePortfolioSwitch = (newId) => {
+    setActivePortfolioId(newId);
+    if (holdingsFilter !== 'all') {
+      setHoldingsFilter(newId);
+    }
+  };
 
   useEffect(() => {
-    if (!selectedDashboardPortfolio) return;
+    if (!activePortfolio) return;
     let isCancelled = false;
 
     const computePortfolioChart = async () => {
       setPortfolioChartLoading(true);
       try {
-        const positions = selectedDashboardPortfolio.positions || [];
+        const positions = activePortfolio.positions || [];
         if (positions.length === 0) {
           const dummyPoints = Array.from({ length: 30 }, (_, i) => ({
-            time: `Day ${i + 1}`,
-            value: selectedDashboardPortfolio.cashBalance || 1000000
+            time: `Dag ${i + 1}`,
+            value: activePortfolio.cashBalance || 1000000
           }));
           if (!isCancelled) setPortfolioChartData(dummyPoints);
           setPortfolioChartLoading(false);
@@ -354,7 +352,7 @@ export default function App() {
         const basePoints = symbolCharts[baseSymbol] || [];
 
         if (basePoints.length === 0) {
-          const cashVal = selectedDashboardPortfolio.cashBalance || 0;
+          const cashVal = activePortfolio.cashBalance || 0;
           const fallbackPoints = Array.from({ length: 30 }, (_, i) => ({ time: `T${i}`, value: cashVal }));
           if (!isCancelled) setPortfolioChartData(fallbackPoints);
           setPortfolioChartLoading(false);
@@ -362,7 +360,7 @@ export default function App() {
         }
 
         const combined = basePoints.map((pt, idx) => {
-          let totalValDKK = selectedDashboardPortfolio.cashBalance || 0;
+          let totalValDKK = activePortfolio.cashBalance || 0;
 
           positions.forEach(pos => {
             const symChart = symbolCharts[pos.symbol];
@@ -390,13 +388,18 @@ export default function App() {
 
     computePortfolioChart();
     return () => { isCancelled = true; };
-  }, [selectedDashboardPortfolio, portfolioTimeframe, liveFxRate]);
+  }, [activePortfolio, portfolioTimeframe, liveFxRate]);
 
   useEffect(() => {
-    const heldSymbols = (activePortfolio?.positions || []).map(p => p.symbol).filter(Boolean);
-    if (heldSymbols.length === 0) return;
+    const allSymbols = [
+      ...new Set(
+        portfolios.flatMap(p => (p.positions || []).map(pos => pos.symbol))
+      )
+    ].filter(Boolean);
 
-    fetch(`${API_BASE}/markets/quotes?symbols=${encodeURIComponent(heldSymbols.join(','))}`)
+    if (allSymbols.length === 0) return;
+
+    fetch(`${API_BASE}/markets/quotes?symbols=${encodeURIComponent(allSymbols.join(','))}`)
       .then(res => res.json())
       .then(data => {
         if (data && typeof data === 'object') {
@@ -404,52 +407,63 @@ export default function App() {
         }
       })
       .catch(() => {});
-  }, [activePortfolio]);
+  }, [portfolios]);
 
-  const holdingsCalculations = useMemo(() => {
-    if (!activePortfolio) {
-      return { totalMarketValueDKK: 0, unrealizedGainDKK: 0, unrealizedGainPct: 0, items: [] };
-    }
+  const allHoldingsCalculations = useMemo(() => {
     let totalMarketValueDKK = 0;
     let totalCostBasisDKK = 0;
+    const allItems = [];
 
-    const items = (activePortfolio.positions || []).map(pos => {
-      const liveData = heldLiveQuotes[pos.symbol] || (selectedSymbol === pos.symbol ? quote : null);
-      const livePrice = liveData?.price || pos.avgPrice;
-      const currency = pos.currency || liveData?.currency || (pos.symbol.endsWith('.CO') ? 'DKK' : 'USD');
-      const fxRate = currency === 'DKK' ? 1.0 : liveFxRate;
+    portfolios.forEach(port => {
+      (port.positions || []).forEach(pos => {
+        const liveData = heldLiveQuotes[pos.symbol] || (selectedSymbol === pos.symbol ? quote : null);
+        const livePrice = liveData?.price || pos.avgPrice;
+        const currency = pos.currency || liveData?.currency || (pos.symbol.endsWith('.CO') ? 'DKK' : 'USD');
+        const fxRate = currency === 'DKK' ? 1.0 : liveFxRate;
 
-      const marketValNative = pos.shares * livePrice;
-      const marketValDKK = marketValNative * fxRate;
-      const costBasisNative = pos.shares * pos.avgPrice;
-      const costBasisDKK = costBasisNative * fxRate;
-      const gainDKK = marketValDKK - costBasisDKK;
-      const gainPct = costBasisDKK > 0 ? (gainDKK / costBasisDKK) * 100 : 0;
+        const marketValNative = pos.shares * livePrice;
+        const marketValDKK = marketValNative * fxRate;
+        const costBasisNative = pos.shares * pos.avgPrice;
+        const costBasisDKK = costBasisNative * fxRate;
+        const gainDKK = marketValDKK - costBasisDKK;
+        const gainPct = costBasisDKK > 0 ? (gainDKK / costBasisDKK) * 100 : 0;
 
-      totalMarketValueDKK += marketValDKK;
-      totalCostBasisDKK += costBasisDKK;
+        if (port.id === activePortfolio?.id) {
+          totalMarketValueDKK += marketValDKK;
+          totalCostBasisDKK += costBasisDKK;
+        }
 
-      return {
-        ...pos,
-        livePrice,
-        currency,
-        fxRate,
-        marketValNative,
-        marketValDKK,
-        costBasisDKK,
-        gainDKK,
-        gainPct,
-        stockName: liveData?.name || pos.symbol
-      };
+        allItems.push({
+          ...pos,
+          portfolioId: port.id,
+          portfolioName: port.name,
+          livePrice,
+          currency,
+          fxRate,
+          marketValNative,
+          marketValDKK,
+          costBasisDKK,
+          gainDKK,
+          gainPct,
+          stockName: liveData?.name || pos.symbol
+        });
+      });
     });
 
     const unrealizedGainDKK = totalMarketValueDKK - totalCostBasisDKK;
     const unrealizedGainPct = totalCostBasisDKK > 0 ? (unrealizedGainDKK / totalCostBasisDKK) * 100 : 0;
 
-    return { totalMarketValueDKK, unrealizedGainDKK, unrealizedGainPct, items };
-  }, [activePortfolio, heldLiveQuotes, quote, selectedSymbol, liveFxRate]);
+    return { totalMarketValueDKK, unrealizedGainDKK, unrealizedGainPct, allItems };
+  }, [portfolios, activePortfolio, heldLiveQuotes, quote, selectedSymbol, liveFxRate]);
 
-  const totalEquity = (activePortfolio?.cashBalance || 0) + (holdingsCalculations.totalMarketValueDKK || 0);
+  const displayedHoldings = useMemo(() => {
+    if (holdingsFilter === 'all') {
+      return allHoldingsCalculations.allItems;
+    }
+    return allHoldingsCalculations.allItems.filter(item => item.portfolioId === holdingsFilter);
+  }, [allHoldingsCalculations, holdingsFilter]);
+
+  const totalEquity = (activePortfolio?.cashBalance || 0) + (allHoldingsCalculations.totalMarketValueDKK || 0);
 
   const timeframeReturn = useMemo(() => {
     if (!chartData || chartData.length < 2) {
@@ -594,7 +608,11 @@ export default function App() {
     const data = [{ name: 'Kontantbeholdning (kr.)', value: cash, color: '#0F172A' }];
     const colors = ['#2563EB', '#0D9488', '#F59E0B', '#8B5CF6', '#EC4899', '#10B981', '#6366F1'];
 
-    (holdingsCalculations.items || []).forEach((pos, idx) => {
+    const portfolioPositions = allHoldingsCalculations.allItems.filter(
+      p => p.portfolioId === activePortfolio.id
+    );
+
+    portfolioPositions.forEach((pos, idx) => {
       data.push({
         name: pos.symbol,
         value: pos.marketValDKK,
@@ -602,7 +620,7 @@ export default function App() {
       });
     });
     return data;
-  }, [activePortfolio, holdingsCalculations]);
+  }, [activePortfolio, allHoldingsCalculations]);
 
   if (!user) {
     return (
@@ -764,8 +782,8 @@ export default function App() {
                 <select
                   aria-label="Active Portfolio Switcher"
                   value={activePortfolioId || ''}
-                  onChange={(e) => setActivePortfolioId(e.target.value)}
-                  className="bg-transparent border-none text-slate-700 focus:outline-none cursor-pointer text-xs ml-1 font-sans"
+                  onChange={(e) => handlePortfolioSwitch(e.target.value)}
+                  className="bg-transparent border-none text-slate-700 focus:outline-none cursor-pointer text-xs ml-1 font-sans font-medium"
                 >
                   {portfolios.map(p => (
                     <option key={p.id} value={p.id}>{p.name}</option>
@@ -788,6 +806,7 @@ export default function App() {
         </div>
       </nav>
 
+      {}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full space-y-6">
         {activeTab === 'dashboard' && (
           <div className="space-y-6">
@@ -808,18 +827,18 @@ export default function App() {
                   {formatDKK(activePortfolio?.cashBalance || 0)}
                 </div>
                 <div className="text-xs font-mono text-slate-600 mt-2">
-                  Købekraft i DKK
+                  Købekraft i DKK ({activePortfolio?.name})
                 </div>
               </div>
 
               <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
                 <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600 mb-1">Urealiseret Gevinst / Tab</div>
-                <div className={`text-2xl font-mono font-bold flex items-center gap-1 ${(holdingsCalculations.unrealizedGainDKK || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                  {(holdingsCalculations.unrealizedGainDKK || 0) >= 0 ? '+' : ''}
-                  {formatDKK(holdingsCalculations.unrealizedGainDKK || 0)}
+                <div className={`text-2xl font-mono font-bold flex items-center gap-1 ${(allHoldingsCalculations.unrealizedGainDKK || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  {(allHoldingsCalculations.unrealizedGainDKK || 0) >= 0 ? '+' : ''}
+                  {formatDKK(allHoldingsCalculations.unrealizedGainDKK || 0)}
                 </div>
-                <div className={`text-xs font-mono mt-2 font-medium ${(holdingsCalculations.unrealizedGainPct || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                  {(holdingsCalculations.unrealizedGainPct || 0) >= 0 ? '+' : ''}{(holdingsCalculations.unrealizedGainPct || 0).toFixed(2)}% på åbne positioner
+                <div className={`text-xs font-mono mt-2 font-medium ${(allHoldingsCalculations.unrealizedGainPct || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  {(allHoldingsCalculations.unrealizedGainPct || 0) >= 0 ? '+' : ''}{(allHoldingsCalculations.unrealizedGainPct || 0).toFixed(2)}% på åbne positioner
                 </div>
               </div>
 
@@ -841,7 +860,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Combined Portfolio Performance Chart Section */}
+            {}
             <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
               <div className="flex flex-wrap justify-between items-center gap-4 mb-5 border-b border-slate-100 pb-4">
                 <div className="flex items-center gap-3">
@@ -857,9 +876,9 @@ export default function App() {
                 <div className="flex flex-wrap items-center gap-3">
                   <select
                     aria-label="Dashboard Portfolio Selector"
-                    value={dashboardPortfolioId || activePortfolioId || ''}
-                    onChange={(e) => setDashboardPortfolioId(e.target.value)}
-                    className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-semibold text-slate-900 focus:outline-none"
+                    value={activePortfolioId || ''}
+                    onChange={(e) => handlePortfolioSwitch(e.target.value)}
+                    className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-semibold text-slate-900 focus:outline-none cursor-pointer"
                   >
                     {portfolios.map(p => (
                       <option key={p.id} value={p.id}>{p.name}</option>
@@ -915,9 +934,10 @@ export default function App() {
               </div>
             </div>
 
+            {}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
-                <div className="flex justify-between items-center mb-5">
+                <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
                   <div>
                     <h3 className="text-base font-semibold text-slate-950">Aktivbeholdninger</h3>
                     <p className="text-xs text-slate-600">Markedsværdi og afkast oversat til danske kroner (DKK)</p>
@@ -930,11 +950,46 @@ export default function App() {
                   </button>
                 </div>
 
+                {/* Portfolio Filter Pills */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-3 mb-3 border-b border-slate-100 text-xs">
+                  <span className="text-slate-400 text-[11px] flex items-center gap-1 mr-1 shrink-0 font-mono">
+                    <Filter className="w-3 h-3" /> Vis:
+                  </span>
+                  <button
+                    onClick={() => setHoldingsFilter('all')}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition shrink-0 ${
+                      holdingsFilter === 'all'
+                        ? 'bg-slate-950 text-white shadow-xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    Alle Borde ({allHoldingsCalculations.allItems.length})
+                  </button>
+                  {portfolios.map(p => {
+                    const count = allHoldingsCalculations.allItems.filter(i => i.portfolioId === p.id).length;
+                    const isSelected = holdingsFilter === p.id;
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => setHoldingsFilter(p.id)}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition shrink-0 ${
+                          isSelected
+                            ? 'bg-blue-600 text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        {p.name} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
                     <thead>
                       <tr className="border-b border-slate-200 text-[10px] font-mono uppercase tracking-wider text-slate-600">
                         <th className="pb-3">Aktiv / Navn</th>
+                        {holdingsFilter === 'all' && <th className="pb-3">Handelsbord</th>}
                         <th className="pb-3 text-right">Antal</th>
                         <th className="pb-3 text-right">Gns. Pris</th>
                         <th className="pb-3 text-right">Aktuel Pris</th>
@@ -944,19 +999,22 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-mono">
-                      {(!holdingsCalculations.items || holdingsCalculations.items.length === 0) ? (
+                      {displayedHoldings.length === 0 ? (
                         <tr>
-                          <td colSpan={7} className="py-8 text-center text-slate-500 font-sans">
-                            Ingen åbne positioner i {activePortfolio?.name}. Brug Trade / Markets til at handle.
+                          <td colSpan={holdingsFilter === 'all' ? 8 : 7} className="py-8 text-center text-slate-500 font-sans">
+                            {holdingsFilter === 'all'
+                              ? 'Ingen åbne positioner i nogen af dine handelsborde endnu.'
+                              : `Ingen åbne positioner i ${portfolios.find(p => p.id === holdingsFilter)?.name || 'dette bord'}.`}
                           </td>
                         </tr>
                       ) : (
-                        holdingsCalculations.items.map(pos => (
-                          <tr key={pos.id || pos.symbol} className="hover:bg-slate-50 transition">
+                        displayedHoldings.map(pos => (
+                          <tr key={`${pos.portfolioId}-${pos.symbol}`} className="hover:bg-slate-50 transition">
                             <td className="py-3.5">
                               <button
                                 onClick={() => {
                                   selectAsset(pos.symbol);
+                                  handlePortfolioSwitch(pos.portfolioId);
                                   setActiveTab('markets');
                                 }}
                                 className="text-left group cursor-pointer"
@@ -965,11 +1023,18 @@ export default function App() {
                                   <span>{pos.symbol}</span>
                                   <span className="text-[10px] text-slate-400 font-normal">({pos.currency})</span>
                                 </div>
-                                <div className="text-[11px] text-slate-500 font-normal truncate max-w-[180px] font-sans">
+                                <div className="text-[11px] text-slate-500 font-normal truncate max-w-[160px] font-sans">
                                   {pos.stockName}
                                 </div>
                               </button>
                             </td>
+                            {holdingsFilter === 'all' && (
+                              <td className="py-3.5">
+                                <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[10px] font-sans font-medium">
+                                  {pos.portfolioName}
+                                </span>
+                              </td>
+                            )}
                             <td className="py-3.5 text-right text-slate-800">{pos.shares.toLocaleString()}</td>
                             <td className="py-3.5 text-right text-slate-800">{formatNativePrice(pos.avgPrice, pos.currency)}</td>
                             <td className="py-3.5 text-right font-medium text-slate-950">{formatNativePrice(pos.livePrice, pos.currency)}</td>
@@ -982,6 +1047,7 @@ export default function App() {
                               <button
                                 onClick={() => {
                                   selectAsset(pos.symbol);
+                                  handlePortfolioSwitch(pos.portfolioId);
                                   setActiveTab('markets');
                                 }}
                                 className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-900 rounded font-semibold text-[11px] transition"
@@ -997,10 +1063,11 @@ export default function App() {
                 </div>
               </div>
 
+              {}
               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm flex flex-col justify-between">
                 <div>
                   <h3 className="text-base font-semibold text-slate-950">Aktivfordeling</h3>
-                  <p className="text-xs text-slate-600 mb-4">Vægtet fordeling i danske kroner</p>
+                  <p className="text-xs text-slate-600 mb-4">{activePortfolio?.name} (Vægtet fordeling i DKK)</p>
 
                   <div className="h-56 w-full">
                     <ResponsiveContainer width="100%" height="100%">
@@ -1047,6 +1114,7 @@ export default function App() {
           </div>
         )}
 
+        {}
         {activeTab === 'markets' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-6">
@@ -1201,9 +1269,15 @@ export default function App() {
               </div>
             </div>
 
+            {}
             <div className="space-y-6">
               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
-                <h3 className="text-base font-semibold text-slate-950 mb-1">Handelsordre</h3>
+                <div className="flex justify-between items-center mb-1">
+                  <h3 className="text-base font-semibold text-slate-950">Handelsordre</h3>
+                  <span className="text-[10px] font-mono bg-slate-100 text-slate-700 px-2 py-0.5 rounded">
+                    Bord: {activePortfolio?.name}
+                  </span>
+                </div>
                 <p className="text-xs text-slate-600 mb-5">Handles i aktiens native valuta ({activeCurrency}) &bull; Afregnet i DKK</p>
 
                 <div className="grid grid-cols-2 bg-slate-100 p-1 rounded-lg mb-5">
@@ -1379,6 +1453,7 @@ export default function App() {
           </div>
         )}
 
+        {}
         {activeTab === 'portfolios' && (
           <div className="space-y-6">
             <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
@@ -1425,7 +1500,7 @@ export default function App() {
                   return (
                     <div
                       key={p.id}
-                      onClick={() => setActivePortfolioId(p.id)}
+                      onClick={() => handlePortfolioSwitch(p.id)}
                       className={`p-4 rounded-xl border cursor-pointer transition ${
                         isActive ? 'border-slate-950 bg-slate-50/50 shadow-sm' : 'border-slate-200 hover:border-slate-300'
                       }`}
@@ -1491,6 +1566,7 @@ export default function App() {
           </div>
         )}
 
+        {}
         {activeTab === 'leaderboard' && (
           <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
             <h3 className="text-base font-semibold text-slate-950 mb-1">Rangliste (Leaderboard)</h3>
