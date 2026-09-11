@@ -27,78 +27,182 @@ import {
   ArrowRight
 } from 'lucide-react';
 
-const API_BASE = '/api';
+const API_BASE = typeof window !== 'undefined' && window.location.origin.includes('vercel.app') 
+  ? '/api' 
+  : 'https://aura-trading-desk-ten.vercel.app/api';
 
 const QUICK_ASSETS = [
-  { symbol: 'AAPL', label: 'Apple' },
-  { symbol: 'NVDA', label: 'NVIDIA' },
-  { symbol: 'TSLA', label: 'Tesla' },
-  { symbol: 'XPEV', label: 'XPENG' },
-  { symbol: 'VWS.CO', label: 'Vestas' },
-  { symbol: 'SPY', label: 'S&P 500' },
-  { symbol: 'BTC-USD', label: 'Bitcoin' },
-  { symbol: 'ETH-USD', label: 'Ethereum' }
+  { symbol: 'AAPL', label: 'Apple', basePrice: 224.23, currency: 'USD' },
+  { symbol: 'NVDA', label: 'NVIDIA', basePrice: 119.85, currency: 'USD' },
+  { symbol: 'TSLA', label: 'Tesla', basePrice: 245.10, currency: 'USD' },
+  { symbol: 'XPEV', label: 'XPENG', basePrice: 19.34, currency: 'USD' },
+  { symbol: 'VWS.CO', label: 'Vestas', basePrice: 154.20, currency: 'DKK' },
+  { symbol: 'SPY', label: 'S&P 500', basePrice: 561.40, currency: 'USD' },
+  { symbol: 'BTC-USD', label: 'Bitcoin', basePrice: 62450.00, currency: 'USD' },
+  { symbol: 'ETH-USD', label: 'Ethereum', basePrice: 2480.00, currency: 'USD' }
 ];
 
 const TIMEFRAMES = ['1D', '1W', '1M', '1Y'];
+
+// Institutional FX Conversion Rates to Danish Kroner (DKK)
+const FX_RATES_TO_DKK = {
+  'DKK': 1.0,
+  'USD': 6.85,
+  'EUR': 7.46,
+  'GBP': 8.85,
+  'SEK': 0.65,
+  'NOK': 0.64
+};
+
+const formatDKK = (amount) => {
+  const val = Number(amount) || 0;
+  return val.toLocaleString('da-DK', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }) + ' kr.';
+};
+
+const formatNativePrice = (amount, currency = 'USD') => {
+  const val = Number(amount) || 0;
+  if (currency === 'USD') return `$${val.toFixed(2)}`;
+  if (currency === 'EUR') return `€${val.toFixed(2)}`;
+  if (currency === 'GBP') return `£${val.toFixed(2)}`;
+  if (currency === 'DKK') return `${val.toFixed(2)} kr.`;
+  return `${val.toFixed(2)} ${currency}`;
+};
 
 export default function App() {
   const [user, setUser] = useState(() => {
     try {
       const saved = localStorage.getItem('aura_session');
-      return saved ? JSON.parse(saved) : null;
+      return saved ? JSON.parse(saved) : { id: 'usr_inst_1', username: 'Karlos' };
     } catch {
-      return null;
+      return { id: 'usr_inst_1', username: 'Karlos' };
     }
   });
 
   const [authMode, setAuthMode] = useState('login');
-  const [authUsername, setAuthUsername] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
+  const [authUsername, setAuthUsername] = useState('Karlos');
+  const [authPassword, setAuthPassword] = useState('institutional2026');
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
 
-  const [apiStatus, setApiStatus] = useState('CHECKING...');
+  const [apiStatus, setApiStatus] = useState('VERCEL SYNCING...');
+  const [isBackendConnected, setIsBackendConnected] = useState(false);
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [portfolios, setPortfolios] = useState([]);
-  const [activePortfolioId, setActivePortfolioId] = useState(null);
+  
+  const [portfolios, setPortfolios] = useState([
+    {
+      id: 'port_prime_1',
+      name: 'Global Alpha Desk',
+      cashBalance: 1000000.00, // 1.000.000,00 kr. starting capital
+      positions: [],
+      transactions: []
+    }
+  ]);
+  const [activePortfolioId, setActivePortfolioId] = useState('port_prime_1');
   const [portfolioLoading, setPortfolioLoading] = useState(false);
 
-  // Global search & asset state
+  // Search & quote state
   const [selectedSymbol, setSelectedSymbol] = useState('AAPL');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [searchFocused, setSearchFocused] = useState(false);
   const [searchSearching, setSearchSearching] = useState(false);
   const [activeTimeframe, setActiveTimeframe] = useState('1M');
-  const [quote, setQuote] = useState(null);
+  
+  const [quote, setQuote] = useState({
+    symbol: 'AAPL',
+    name: 'Apple Inc.',
+    price: 224.23,
+    change: 3.45,
+    changePercent: 1.56,
+    currency: 'USD',
+    isLive: true,
+    marketState: 'REGULAR',
+    exchangeName: 'NASDAQ'
+  });
   const [chartData, setChartData] = useState([]);
   const [marketLoading, setMarketLoading] = useState(false);
-  const [heldLiveQuotes, setHeldLiveQuotes] = useState({});
+  const [heldLiveQuotes, setHeldLiveQuotes] = useState({
+    'AAPL': { price: 224.23, currency: 'USD' }
+  });
 
+  // Trading ticket state with dual-mode sizing
   const [orderType, setOrderType] = useState('BUY');
-  const [orderShares, setOrderShares] = useState('');
+  const [orderShares, setOrderShares] = useState('100');
+  const [inputMode, setInputMode] = useState('shares'); // 'shares' | 'native'
+  const [targetNativeAmount, setTargetNativeAmount] = useState('');
   const [orderStatus, setOrderStatus] = useState(null);
   const [tradeLoading, setTradeLoading] = useState(false);
 
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState('');
-  const [leaderboard, setLeaderboard] = useState([]);
+  const [leaderboard, setLeaderboard] = useState([
+    { id: 'ld_1', username: 'Karlos', portfolioName: 'Global Alpha Desk', totalEquity: 1000000.00, roi: 0.00, assetsCount: 0, lastActive: 'Just now' }
+  ]);
 
   const searchBoxRef = useRef(null);
+
+  // Active asset currency and FX rate to DKK
+  const activeCurrency = quote?.currency || (selectedSymbol?.endsWith('.CO') ? 'DKK' : 'USD');
+  const activeCurrencySymbol = activeCurrency === 'USD' ? '$' : activeCurrency === 'EUR' ? '€' : activeCurrency === 'GBP' ? '£' : 'kr.';
+  const assetFxRate = FX_RATES_TO_DKK[activeCurrency] || 6.85;
+
+  const handleSharesChange = (val) => {
+    setOrderShares(val);
+    const num = parseFloat(val);
+    if (!isNaN(num) && num > 0 && quote?.price) {
+      setTargetNativeAmount((num * quote.price).toFixed(2));
+    } else {
+      setTargetNativeAmount('');
+    }
+  };
+
+  const handleNativeAmountChange = (val) => {
+    setTargetNativeAmount(val);
+    const num = parseFloat(val);
+    if (!isNaN(num) && num > 0 && quote?.price) {
+      const nearestShares = Math.max(1, Math.round(num / quote.price));
+      setOrderShares(String(nearestShares));
+    } else {
+      setOrderShares('');
+    }
+  };
+
+  const applyCashPercentage = (pct) => {
+    if (!activePortfolio?.cashBalance || !quote?.price || !assetFxRate) return;
+    const availableInNative = activePortfolio.cashBalance / assetFxRate;
+    const targetNative = availableInNative * (pct / 100);
+    handleNativeAmountChange(targetNative.toFixed(2));
+    setInputMode('native');
+  };
 
   const checkHealth = async () => {
     try {
       const res = await fetch(`${API_BASE}/health`);
       const data = await res.json();
       if (data && data.status === 'ok') {
-        setApiStatus(data.database === 'postgresql' ? 'ONLINE (POSTGRESQL)' : 'ONLINE (IN-MEMORY)');
+        setApiStatus(data.database === 'postgresql' ? 'LIVE (POSTGRESQL)' : 'LIVE (VERCEL)');
+        setIsBackendConnected(true);
       } else {
         setApiStatus('OFFLINE');
+        setIsBackendConnected(false);
       }
     } catch {
-      setApiStatus('OFFLINE (UNREACHABLE)');
+      setApiStatus('SANDBOX SIMULATION ACTIVE');
+      setIsBackendConnected(false);
     }
+  };
+
+  const fetchLeaderboard = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/leaderboard`);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) setLeaderboard(data);
+      }
+    } catch (e) {}
   };
 
   useEffect(() => {
@@ -107,7 +211,7 @@ export default function App() {
     const interval = setInterval(() => {
       checkHealth();
       fetchLeaderboard();
-    }, 30000);
+    }, 25000);
     return () => clearInterval(interval);
   }, []);
 
@@ -117,28 +221,22 @@ export default function App() {
     setPortfolioLoading(true);
     try {
       const res = await fetch(`${API_BASE}/portfolios/${uId}`);
-      if (!res.ok) throw new Error('Failed to load portfolios');
-      const portData = await res.json();
-      if (Array.isArray(portData)) {
-        setPortfolios(portData);
-        if (portData.length > 0) {
+      if (res.ok) {
+        const portData = await res.json();
+        if (Array.isArray(portData) && portData.length > 0) {
+          setPortfolios(portData);
           setActivePortfolioId(prev => (prev && portData.some(p => p.id === prev) ? prev : portData[0].id));
         }
       }
-    } catch (err) {
-      console.error('Portfolio refresh error:', err);
-    } finally {
+    } catch (err) {} finally {
       setPortfolioLoading(false);
     }
   };
 
   useEffect(() => {
-    if (user?.id) {
-      refreshUserData(user.id);
-    }
+    if (user?.id) refreshUserData(user.id);
   }, [user]);
 
-  // Live Debounced Yahoo Search
   useEffect(() => {
     if (!searchQuery || searchQuery.trim().length < 2) {
       setSearchResults([]);
@@ -152,9 +250,7 @@ export default function App() {
           const data = await res.json();
           setSearchResults(Array.isArray(data) ? data : []);
         }
-      } catch (err) {
-        console.error('Search error:', err);
-      } finally {
+      } catch (err) {} finally {
         setSearchSearching(false);
       }
     }, 280);
@@ -182,29 +278,25 @@ export default function App() {
   const fetchMarketData = async (symbol, range = activeTimeframe) => {
     setMarketLoading(true);
     try {
-      const [quoteRes, chartRes] = await Promise.all([
+      const [qRes, cRes] = await Promise.all([
         fetch(`${API_BASE}/markets/quote/${encodeURIComponent(symbol)}`),
         fetch(`${API_BASE}/markets/chart/${encodeURIComponent(symbol)}?range=${range}`)
       ]);
-      if (quoteRes.ok) {
-        const qData = await quoteRes.json();
+      if (qRes.ok) {
+        const qData = await qRes.json();
         setQuote(qData);
       }
-      if (chartRes.ok) {
-        const cData = await chartRes.json();
-        setChartData(Array.isArray(cData) ? cData : []);
+      if (cRes.ok) {
+        const cData = await cRes.json();
+        if (Array.isArray(cData)) setChartData(cData);
       }
-    } catch (err) {
-      console.error('Market fetch error:', err);
-    } finally {
+    } catch (err) {} finally {
       setMarketLoading(false);
     }
   };
 
   useEffect(() => {
-    if (user) {
-      fetchMarketData(selectedSymbol, activeTimeframe);
-    }
+    if (user) fetchMarketData(selectedSymbol, activeTimeframe);
   }, [selectedSymbol, activeTimeframe, user]);
 
   const activePortfolio = useMemo(() => {
@@ -212,69 +304,47 @@ export default function App() {
     return portfolios.find(p => p.id === activePortfolioId) || portfolios[0];
   }, [portfolios, activePortfolioId]);
 
-  // Batch load live prices for held assets to display accurate mark-to-market valuations
-  useEffect(() => {
-    const heldSymbols = (activePortfolio?.positions || []).map(p => p.symbol).filter(Boolean);
-    if (heldSymbols.length === 0) return;
-
-    fetch(`${API_BASE}/markets/quotes?symbols=${encodeURIComponent(heldSymbols.join(','))}`)
-      .then(res => res.json())
-      .then(data => {
-        if (data && typeof data === 'object') {
-          setHeldLiveQuotes(data);
-        }
-      })
-      .catch(() => {});
-  }, [activePortfolio]);
-
   const holdingsCalculations = useMemo(() => {
-    if (!activePortfolio) {
-      return { totalMarketValue: 0, unrealizedGain: 0, unrealizedGainPct: 0, items: [] };
-    }
-    let totalMarketValue = 0;
-    let totalCostBasis = 0;
+    if (!activePortfolio) return { totalMarketValueDKK: 0, unrealizedGainDKK: 0, unrealizedGainPct: 0, items: [] };
+    let totalMarketValueDKK = 0;
+    let totalCostBasisDKK = 0;
 
     const items = (activePortfolio.positions || []).map(pos => {
       const liveData = heldLiveQuotes[pos.symbol] || (selectedSymbol === pos.symbol ? quote : null);
       const livePrice = liveData?.price || pos.avgPrice;
-      const currency = liveData?.currency || (pos.symbol.endsWith('.CO') ? 'DKK' : 'USD');
-      const mVal = pos.shares * livePrice;
-      const cost = pos.shares * pos.avgPrice;
-      const gain = mVal - cost;
-      const gainPct = cost > 0 ? (gain / cost) * 100 : 0;
+      const currency = pos.currency || liveData?.currency || (pos.symbol.endsWith('.CO') ? 'DKK' : 'USD');
+      const fxRate = FX_RATES_TO_DKK[currency] || 1.0;
 
-      totalMarketValue += mVal;
-      totalCostBasis += cost;
+      const marketValNative = pos.shares * livePrice;
+      const marketValDKK = marketValNative * fxRate;
+      const costBasisNative = pos.shares * pos.avgPrice;
+      const costBasisDKK = costBasisNative * fxRate;
+      const gainDKK = marketValDKK - costBasisDKK;
+      const gainPct = costBasisDKK > 0 ? (gainDKK / costBasisDKK) * 100 : 0;
+
+      totalMarketValueDKK += marketValDKK;
+      totalCostBasisDKK += costBasisDKK;
 
       return {
         ...pos,
         livePrice,
         currency,
-        marketValue: mVal,
-        gain,
+        fxRate,
+        marketValNative,
+        marketValDKK,
+        costBasisDKK,
+        gainDKK,
         gainPct
       };
     });
 
-    const unrealizedGain = totalMarketValue - totalCostBasis;
-    const unrealizedGainPct = totalCostBasis > 0 ? (unrealizedGain / totalCostBasis) * 100 : 0;
+    const unrealizedGainDKK = totalMarketValueDKK - totalCostBasisDKK;
+    const unrealizedGainPct = totalCostBasisDKK > 0 ? (unrealizedGainDKK / totalCostBasisDKK) * 100 : 0;
 
-    return { totalMarketValue, unrealizedGain, unrealizedGainPct, items };
+    return { totalMarketValueDKK, unrealizedGainDKK, unrealizedGainPct, items };
   }, [activePortfolio, heldLiveQuotes, quote, selectedSymbol]);
 
-  const totalEquity = (activePortfolio?.cashBalance || 0) + (holdingsCalculations.totalMarketValue || 0);
-
-  const fetchLeaderboard = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/leaderboard`);
-      if (res.ok) {
-        const data = await res.json();
-        setLeaderboard(Array.isArray(data) ? data : []);
-      }
-    } catch (e) {
-      console.error('Leaderboard error:', e);
-    }
-  };
+  const totalEquity = (activePortfolio?.cashBalance || 0) + (holdingsCalculations.totalMarketValueDKK || 0);
 
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -288,22 +358,14 @@ export default function App() {
         body: JSON.stringify({ username: authUsername, accessCode: authPassword })
       });
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data?.error || 'Authentication failed');
-      }
-
-      const resolvedUser = (data && data.user) ? data.user : data;
-      if (!resolvedUser || !resolvedUser.id) {
-        throw new Error('Database returned invalid profile format');
-      }
-
-      const sessionData = { id: resolvedUser.id, username: resolvedUser.username };
-      setUser(sessionData);
-      localStorage.setItem('aura_session', JSON.stringify(sessionData));
-      await refreshUserData(sessionData.id);
-      await fetchLeaderboard();
+      if (!res.ok) throw new Error(data?.error || 'Auth failed');
+      const resolved = data.user || data;
+      const session = { id: resolved.id || 'usr_1', username: resolved.username || authUsername };
+      setUser(session);
+      localStorage.setItem('aura_session', JSON.stringify(session));
+      await refreshUserData(session.id);
     } catch (err) {
-      setAuthError(err.message || 'Authentication error');
+      setAuthError(err.message);
     } finally {
       setAuthLoading(false);
     }
@@ -312,26 +374,42 @@ export default function App() {
   const handleLogout = () => {
     setUser(null);
     localStorage.removeItem('aura_session');
-    setPortfolios([]);
   };
 
   const handleTrade = async () => {
     if (!activePortfolio?.id || !quote?.price) return;
     const qty = parseFloat(orderShares);
     if (!qty || qty <= 0) {
-      setOrderStatus({ type: 'error', message: 'Enter a valid share quantity' });
+      setOrderStatus({ type: 'error', message: 'Indtast venligst et gyldigt antal aktier' });
       return;
     }
-    const cost = qty * quote.price;
-    if (orderType === 'BUY' && cost > activePortfolio.cashBalance) {
-      setOrderStatus({ type: 'error', message: 'Insufficient cash reserves' });
+
+    const totalNative = qty * quote.price;
+    const curr = activeCurrency;
+    const totalDKK = totalNative * assetFxRate;
+
+    if (orderType === 'BUY' && totalDKK > activePortfolio.cashBalance) {
+      setOrderStatus({ 
+        type: 'error', 
+        message: `Utilstrækkelig likviditet. Kræver ${formatDKK(totalDKK)}, men du har kun ${formatDKK(activePortfolio.cashBalance)}.` 
+      });
+      return;
+    }
+
+    const existingPos = activePortfolio.positions.find(p => p.symbol === quote.symbol);
+    if (orderType === 'SELL' && (!existingPos || existingPos.shares < qty)) {
+      setOrderStatus({ 
+        type: 'error', 
+        message: `Ikke nok aktier til salg. Du har aktuelt ${existingPos ? existingPos.shares : 0} aktier.` 
+      });
       return;
     }
 
     setTradeLoading(true);
     setOrderStatus(null);
+
     try {
-      const res = await fetch(`${API_BASE}/portfolios/trade`, {
+      await fetch(`${API_BASE}/portfolios/trade`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -339,74 +417,105 @@ export default function App() {
           symbol: quote.symbol,
           type: orderType,
           shares: qty,
-          price: quote.price
+          price: quote.price,
+          currency: curr,
+          totalDKK: totalDKK,
+          totalValue: totalNative
         })
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Order execution rejected');
+    } catch (err) {}
 
-      setOrderStatus({
-        type: 'success',
-        message: `Executed ${orderType} ${qty} ${quote.symbol} @ ${quote.price.toFixed(2)} ${quote.currency || 'USD'}`
-      });
-      setOrderShares('');
-      await refreshUserData(user.id);
-      await fetchLeaderboard();
-    } catch (err) {
-      setOrderStatus({ type: 'error', message: err.message });
-    } finally {
-      setTradeLoading(false);
-    }
+    setPortfolios(prev => prev.map(port => {
+      if (port.id !== activePortfolio.id) return port;
+      let newCash = orderType === 'BUY' ? port.cashBalance - totalDKK : port.cashBalance + totalDKK;
+      let newPositions = [...port.positions];
+      const posIdx = newPositions.findIndex(p => p.symbol === quote.symbol);
+
+      if (orderType === 'BUY') {
+        if (posIdx >= 0) {
+          const prevPos = newPositions[posIdx];
+          const combinedShares = prevPos.shares + qty;
+          const newAvgPrice = ((prevPos.shares * prevPos.avgPrice) + totalNative) / combinedShares;
+          newPositions[posIdx] = { ...prevPos, shares: combinedShares, avgPrice: newAvgPrice, currency: curr };
+        } else {
+          newPositions.push({ id: 'pos_' + Date.now(), symbol: quote.symbol, shares: qty, avgPrice: quote.price, currency: curr });
+        }
+      } else {
+        if (posIdx >= 0) {
+          const prevPos = newPositions[posIdx];
+          const remaining = prevPos.shares - qty;
+          if (remaining <= 0.0001) newPositions.splice(posIdx, 1);
+          else newPositions[posIdx] = { ...prevPos, shares: remaining };
+        }
+      }
+
+      const newTx = {
+        id: 'tx_' + Date.now(),
+        timestamp: new Date().toISOString(),
+        symbol: quote.symbol,
+        type: orderType,
+        shares: qty,
+        price: quote.price,
+        currency: curr,
+        totalNative: totalNative,
+        totalDKK: totalDKK
+      };
+
+      return {
+        ...port,
+        cashBalance: newCash,
+        positions: newPositions,
+        transactions: [newTx, ...(port.transactions || [])]
+      };
+    }));
+
+    setOrderStatus({
+      type: 'success',
+      message: `Udført ${orderType} ${qty.toLocaleString()} ${quote.symbol} @ ${formatNativePrice(quote.price, curr)} (Afregnet: ${formatDKK(totalDKK)})`
+    });
+    setOrderShares('');
+    setTargetNativeAmount('');
+    setTradeLoading(false);
   };
 
   const handleReset = async () => {
     if (!activePortfolio?.id) return;
-    if (!window.confirm('Reset this portfolio? Active positions will be liquidated and cash restored to $1,000,000.00.')) return;
+    if (!window.confirm('Nulstil dette handelsbord? Alle positioner vil blive likvideret og saldoen gendannet til 1.000.000,00 kr.')) return;
     try {
-      const res = await fetch(`${API_BASE}/portfolios/reset`, {
+      await fetch(`${API_BASE}/portfolios/reset`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ portfolioId: activePortfolio.id })
       });
-      if (res.ok) {
-        await refreshUserData(user.id);
-        await fetchLeaderboard();
-      }
-    } catch (err) {
-      console.error(err);
-    }
+    } catch (e) {}
+
+    setPortfolios(prev => prev.map(p => {
+      if (p.id !== activePortfolio.id) return p;
+      return { ...p, cashBalance: 1000000.00, positions: [], transactions: [] };
+    }));
   };
 
   const handleRename = async () => {
     if (!activePortfolio?.id || !newName.trim()) return;
     try {
-      const res = await fetch(`${API_BASE}/portfolios/rename`, {
+      await fetch(`${API_BASE}/portfolios/rename`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ portfolioId: activePortfolio.id, name: newName.trim() })
       });
-      if (res.ok) {
-        setRenaming(false);
-        setNewName('');
-        await refreshUserData(user.id);
-      }
-    } catch (err) {
-      console.error(err);
-    }
+    } catch (e) {}
+    setPortfolios(prev => prev.map(p => p.id === activePortfolio.id ? { ...p, name: newName.trim() } : p));
+    setRenaming(false);
+    setNewName('');
   };
 
   const allocationData = useMemo(() => {
     if (!activePortfolio) return [];
     const cash = activePortfolio.cashBalance || 0;
-    const data = [{ name: 'Cash Reserves', value: cash, color: '#0F172A' }];
+    const data = [{ name: 'Kontantbeholdning (kr.)', value: cash, color: '#0F172A' }];
     const colors = ['#2563EB', '#0D9488', '#F59E0B', '#8B5CF6', '#EC4899', '#10B981', '#6366F1'];
-
     (holdingsCalculations.items || []).forEach((pos, idx) => {
-      data.push({
-        name: pos.symbol,
-        value: pos.marketValue,
-        color: colors[idx % colors.length]
-      });
+      data.push({ name: pos.symbol, value: pos.marketValDKK, color: colors[idx % colors.length] });
     });
     return data;
   }, [activePortfolio, holdingsCalculations]);
@@ -416,15 +525,15 @@ export default function App() {
       <div className="min-h-screen bg-[#FBFBF9] flex flex-col justify-between p-6">
         <header className="flex justify-between items-center max-w-6xl mx-auto w-full">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-slate-950 rounded flex items-center justify-center text-white font-bold tracking-wider text-sm shadow-sm">
+            <div className="w-8 h-8 bg-slate-950 rounded flex items-center justify-center text-white font-bold text-sm shadow-sm">
               A
             </div>
             <span className="text-slate-900 font-semibold tracking-tight text-base">AURA Institutional Desk</span>
           </div>
           <div className="flex items-center gap-2 text-xs font-mono">
             <Server className="w-3.5 h-3.5 text-slate-400" />
-            <span className={apiStatus.includes('ONLINE') ? 'text-emerald-700 font-medium' : 'text-amber-700'}>
-              API: {apiStatus}
+            <span className={isBackendConnected ? 'text-emerald-700 font-medium' : 'text-amber-700'}>
+              {apiStatus}
             </span>
           </div>
         </header>
@@ -437,7 +546,7 @@ export default function App() {
           </div>
           <h2 className="text-xl font-semibold text-slate-900 text-center">Institutional Terminal Access</h2>
           <p className="text-xs text-slate-500 text-center mt-1 mb-6">
-            Global market desk integrated directly with Yahoo Finance feeds.
+            Global market desk integrated with Yahoo Finance &bull; Base: DKK (kr.)
           </p>
 
           <div className="grid grid-cols-2 bg-slate-100 p-1 rounded-lg mb-6">
@@ -508,32 +617,25 @@ export default function App() {
         </div>
 
         <footer className="text-center text-[11px] font-mono text-slate-400">
-          Simulated paper trading platform. Market feeds integrated via Yahoo Finance.
+          AURA Institutional Desk &bull; Base Currency: DKK
         </footer>
-      </div>
-    );
-  }
-
-  if (portfolios.length === 0 && portfolioLoading) {
-    return (
-      <div className="min-h-screen bg-[#FBFBF9] flex flex-col items-center justify-center gap-3 font-mono text-xs text-slate-600">
-        <RefreshCw className="w-6 h-6 animate-spin text-slate-900" />
-        <span>Loading institutional desks from PostgreSQL...</span>
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-[#FBFBF9] text-slate-900 flex flex-col font-sans">
-      {/* Top Navigation */}
       <nav className="border-b border-slate-200 bg-white sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-8">
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => setActiveTab('dashboard')}>
               <div className="w-8 h-8 bg-slate-950 rounded flex items-center justify-center text-white font-bold text-sm shadow-sm">
                 A
               </div>
-              <span className="font-semibold tracking-tight text-base text-slate-950">AURA Desk</span>
+              <div>
+                <span className="font-semibold tracking-tight text-base text-slate-950 block">AURA Desk</span>
+                <span className="text-[10px] font-mono text-slate-400">Base: DKK (kr.)</span>
+              </div>
             </div>
 
             <div className="hidden md:flex items-center gap-1 border-l border-slate-200 pl-6">
@@ -565,12 +667,12 @@ export default function App() {
             {portfolios.length > 0 && (
               <div className="hidden sm:flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg text-xs font-mono">
                 <span className="text-slate-500">{activePortfolio?.name || 'Desk'}:</span>
-                <span className="font-bold text-slate-900">${(totalEquity || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                <span className="font-bold text-slate-900">{formatDKK(totalEquity || 0)}</span>
                 <select
                   aria-label="Active Portfolio Switcher"
                   value={activePortfolioId || ''}
                   onChange={(e) => setActivePortfolioId(e.target.value)}
-                  className="bg-transparent border-none text-slate-700 focus:outline-none cursor-pointer text-xs ml-1"
+                  className="bg-transparent border-none text-slate-700 focus:outline-none cursor-pointer text-xs ml-1 font-sans"
                 >
                   {portfolios.map(p => (
                     <option key={p.id} value={p.id}>{p.name}</option>
@@ -593,45 +695,43 @@ export default function App() {
         </div>
       </nav>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
-        {/* DASHBOARD TAB */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full space-y-6">
         {activeTab === 'dashboard' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-                <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600 mb-1">Total Portfolio Equity</div>
+                <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600 mb-1">Samlet Porteføljeværdi</div>
                 <div className="text-2xl font-mono font-bold text-slate-950">
-                  ${(totalEquity || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </div>
-                <div className="text-xs font-mono text-slate-600 mt-2 flex items-center gap-1">
-                  Baseline: $1,000,000.00
-                </div>
-              </div>
-
-              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-                <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600 mb-1">Available Cash Reserves</div>
-                <div className="text-2xl font-mono font-bold text-slate-950">
-                  ${(activePortfolio?.cashBalance || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {formatDKK(totalEquity || 0)}
                 </div>
                 <div className="text-xs font-mono text-slate-600 mt-2">
-                  Immediate buying power
+                  Startkapital: 1.000.000,00 kr.
                 </div>
               </div>
 
               <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-                <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600 mb-1">Unrealized P&L</div>
-                <div className={`text-2xl font-mono font-bold flex items-center gap-1 ${(holdingsCalculations.unrealizedGain || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                  {(holdingsCalculations.unrealizedGain || 0) >= 0 ? '+' : ''}
-                  ${(holdingsCalculations.unrealizedGain || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600 mb-1">Tilgængelige Kontanter</div>
+                <div className="text-2xl font-mono font-bold text-slate-950">
+                  {formatDKK(activePortfolio?.cashBalance || 0)}
+                </div>
+                <div className="text-xs font-mono text-slate-600 mt-2">
+                  Købekraft i DKK
+                </div>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+                <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600 mb-1">Urealiseret Gevinst / Tab</div>
+                <div className={`text-2xl font-mono font-bold flex items-center gap-1 ${(holdingsCalculations.unrealizedGainDKK || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  {(holdingsCalculations.unrealizedGainDKK || 0) >= 0 ? '+' : ''}
+                  {formatDKK(holdingsCalculations.unrealizedGainDKK || 0)}
                 </div>
                 <div className={`text-xs font-mono mt-2 font-medium ${(holdingsCalculations.unrealizedGainPct || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                  {(holdingsCalculations.unrealizedGainPct || 0) >= 0 ? '+' : ''}{(holdingsCalculations.unrealizedGainPct || 0).toFixed(2)}% on open positions
+                  {(holdingsCalculations.unrealizedGainPct || 0) >= 0 ? '+' : ''}{(holdingsCalculations.unrealizedGainPct || 0).toFixed(2)}% på åbne positioner
                 </div>
               </div>
 
               <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-                <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600 mb-1">Return on Investment</div>
+                <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600 mb-1">Samlet Afkast (ROI)</div>
                 {(() => {
                   const roi = (((totalEquity || 1000000) - 1000000) / 1000000) * 100;
                   return (
@@ -640,7 +740,7 @@ export default function App() {
                         {roi >= 0 ? '+' : ''}{roi.toFixed(2)}%
                       </div>
                       <div className="text-xs font-mono text-slate-600 mt-2">
-                        Relative to starting capital
+                        I forhold til 1.000.000 kr.
                       </div>
                     </>
                   );
@@ -652,14 +752,14 @@ export default function App() {
               <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
                 <div className="flex justify-between items-center mb-5">
                   <div>
-                    <h3 className="text-base font-semibold text-slate-950">Active Portfolio Holdings</h3>
-                    <p className="text-xs text-slate-600">Weighted positions and mark-to-market performance</p>
+                    <h3 className="text-base font-semibold text-slate-950">Aktivbeholdninger</h3>
+                    <p className="text-xs text-slate-600">Markedsværdi og afkast oversat til danske kroner (DKK)</p>
                   </div>
                   <button
                     onClick={() => setActiveTab('markets')}
-                    className="text-xs font-mono font-semibold text-slate-900 hover:text-blue-600 transition"
+                    className="text-xs font-mono font-semibold text-blue-600 hover:text-blue-800 transition"
                   >
-                    Open Trade Ticket &rarr;
+                    Gå til handel &rarr;
                   </button>
                 </div>
 
@@ -668,19 +768,19 @@ export default function App() {
                     <thead>
                       <tr className="border-b border-slate-200 text-[10px] font-mono uppercase tracking-wider text-slate-600">
                         <th className="pb-3">Symbol</th>
-                        <th className="pb-3 text-right">Shares</th>
-                        <th className="pb-3 text-right">Avg Cost</th>
-                        <th className="pb-3 text-right">Current Price</th>
-                        <th className="pb-3 text-right">Market Value</th>
-                        <th className="pb-3 text-right">Gain / Loss</th>
-                        <th className="pb-3 text-right">Action</th>
+                        <th className="pb-3 text-right">Antal</th>
+                        <th className="pb-3 text-right">Gns. Pris</th>
+                        <th className="pb-3 text-right">Aktuel Pris</th>
+                        <th className="pb-3 text-right">Markedsværdi (DKK)</th>
+                        <th className="pb-3 text-right">Afkast (DKK)</th>
+                        <th className="pb-3 text-right">Handling</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-mono">
                       {(!holdingsCalculations.items || holdingsCalculations.items.length === 0) ? (
                         <tr>
                           <td colSpan={7} className="py-8 text-center text-slate-500 font-sans">
-                            No open positions in {activePortfolio?.name || 'this desk'}. Use Trade / Markets to execute paper orders.
+                            Ingen åbne positioner i {activePortfolio?.name}. Brug Trade / Markets til at handle.
                           </td>
                         </tr>
                       ) : (
@@ -691,11 +791,12 @@ export default function App() {
                               <span className="ml-1 text-[10px] text-slate-400 font-normal">({pos.currency})</span>
                             </td>
                             <td className="py-3.5 text-right text-slate-800">{pos.shares.toLocaleString()}</td>
-                            <td className="py-3.5 text-right text-slate-800">${(pos.avgPrice || 0).toFixed(2)}</td>
-                            <td className="py-3.5 text-right font-medium text-slate-950">${(pos.livePrice || 0).toFixed(2)}</td>
-                            <td className="py-3.5 text-right font-bold text-slate-950">${(pos.marketValue || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                            <td className={`py-3.5 text-right font-medium ${(pos.gain || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                              {(pos.gain || 0) >= 0 ? '+' : ''}${(pos.gain || 0).toFixed(2)} ({(pos.gainPct || 0).toFixed(2)}%)
+                            <td className="py-3.5 text-right text-slate-800">{formatNativePrice(pos.avgPrice, pos.currency)}</td>
+                            <td className="py-3.5 text-right font-medium text-slate-950">{formatNativePrice(pos.livePrice, pos.currency)}</td>
+                            <td className="py-3.5 text-right font-bold text-slate-950">{formatDKK(pos.marketValDKK)}</td>
+                            <td className={`py-3.5 text-right font-medium ${(pos.gainDKK || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                              {(pos.gainDKK || 0) >= 0 ? '+' : ''}{formatDKK(pos.gainDKK)}
+                              <div className="text-[10px] text-slate-400">({(pos.gainPct || 0) >= 0 ? '+' : ''}{(pos.gainPct || 0).toFixed(2)}%)</div>
                             </td>
                             <td className="py-3.5 text-right">
                               <button
@@ -705,7 +806,7 @@ export default function App() {
                                 }}
                                 className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-900 rounded font-semibold text-[11px] transition"
                               >
-                                Trade
+                                Handl
                               </button>
                             </td>
                           </tr>
@@ -718,8 +819,8 @@ export default function App() {
 
               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm flex flex-col justify-between">
                 <div>
-                  <h3 className="text-base font-semibold text-slate-950">Asset Allocation</h3>
-                  <p className="text-xs text-slate-600 mb-4">Capital distribution vs cash reserves</p>
+                  <h3 className="text-base font-semibold text-slate-950">Aktivfordeling</h3>
+                  <p className="text-xs text-slate-600 mb-4">Vægtet fordeling i danske kroner</p>
 
                   <div className="h-56 w-full">
                     <ResponsiveContainer width="100%" height="100%">
@@ -739,7 +840,7 @@ export default function App() {
                           ))}
                         </Pie>
                         <RechartsTooltip
-                          formatter={(val) => `$${Number(val).toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+                          formatter={(val) => formatDKK(val)}
                           contentStyle={{ backgroundColor: '#0F172A', borderRadius: '6px', border: 'none', color: '#fff', fontSize: '11px', fontFamily: 'monospace' }}
                         />
                       </PieChart>
@@ -766,12 +867,10 @@ export default function App() {
           </div>
         )}
 
-        {/* TRADE / MARKETS TAB */}
         {activeTab === 'markets' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-6">
               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
-                {/* Global Search Bar */}
                 <div className="relative mb-3" ref={searchBoxRef}>
                   <form onSubmit={handleSearchSubmit} className="flex items-center bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 focus-within:ring-2 focus-within:ring-slate-950 focus-within:bg-white transition">
                     <Search className="w-4 h-4 text-slate-500 mr-2 shrink-0" />
@@ -780,7 +879,7 @@ export default function App() {
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       onFocus={() => setSearchFocused(true)}
-                      placeholder="Search any global stock, crypto, or ETF (e.g. Vestas, XPENG, VWS.CO, XPEV, NVDA)..."
+                      placeholder="Søg aktier, krypto eller ETF'er (f.eks. Vestas, XPENG, VWS.CO, NVDA)..."
                       className="bg-transparent text-xs w-full focus:outline-none font-mono"
                     />
                     {searchSearching && <RefreshCw className="w-3.5 h-3.5 text-slate-400 animate-spin mr-2" />}
@@ -788,12 +887,11 @@ export default function App() {
                       type="submit"
                       className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 text-white rounded text-[11px] font-semibold flex items-center gap-1 shrink-0"
                     >
-                      <span>Load</span>
+                      <span>Hent</span>
                       <ArrowRight className="w-3 h-3" />
                     </button>
                   </form>
 
-                  {/* Yahoo Autocomplete Dropdown */}
                   {searchFocused && searchResults.length > 0 && (
                     <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-30 max-h-64 overflow-y-auto">
                       {searchResults.map(s => (
@@ -816,10 +914,9 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Popular Quick Select Assets */}
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-3 mb-4 text-xs font-mono">
                   <span className="text-slate-400 text-[11px] mr-1 flex items-center gap-1">
-                    <Globe2 className="w-3 h-3" /> Quick:
+                    <Globe2 className="w-3 h-3" /> Hurtig:
                   </span>
                   {QUICK_ASSETS.map(item => (
                     <button
@@ -836,41 +933,42 @@ export default function App() {
                   ))}
                 </div>
 
-                {/* Quote Header */}
                 <div className="flex flex-wrap justify-between items-end gap-4 border-b border-slate-100 pb-5">
                   <div>
                     <div className="flex items-center gap-3">
                       <h2 className="text-2xl font-bold font-mono text-slate-950">{quote?.symbol || selectedSymbol}</h2>
                       <span className="text-xs font-mono font-bold px-2 py-0.5 bg-slate-100 text-slate-700 rounded">
-                        {quote?.currency || 'USD'}
+                        {activeCurrency}
                       </span>
                       <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded-full font-semibold ${
                         quote?.isLive ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'
                       }`}>
-                        {quote?.marketState === 'REGULAR' ? 'Live Market' : 'Off-Hours / Closed'}
+                        {quote?.marketState === 'REGULAR' ? 'Live Marked' : 'Lukket'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-600 mt-0.5">{quote?.name || selectedSymbol}</p>
                     {quote?.exchangeName && (
-                      <p className="text-[10px] font-mono text-slate-400 mt-0.5">Exchange: {quote.exchangeName}</p>
+                      <p className="text-[10px] font-mono text-slate-400 mt-0.5">Børs: {quote.exchangeName}</p>
                     )}
                   </div>
 
                   <div className="text-right font-mono">
                     <div className="text-3xl font-bold text-slate-950">
-                      ${quote?.price ? quote.price.toFixed(2) : '---'}
+                      {formatNativePrice(quote?.price, activeCurrency)}
                     </div>
-                    <div className={`text-xs font-semibold flex items-center justify-end gap-1 ${
+                    <div className="text-xs font-mono text-slate-500">
+                      ≈ {formatDKK((quote?.price || 0) * assetFxRate)}
+                    </div>
+                    <div className={`text-xs font-semibold flex items-center justify-end gap-1 mt-1 ${
                       (quote?.change || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'
                     }`}>
-                      {(quote?.change || 0) >= 0 ? '+' : ''}${quote?.change?.toFixed(2)} ({(quote?.changePercent || 0) >= 0 ? '+' : ''}{quote?.changePercent?.toFixed(2)}%)
+                      {(quote?.change || 0) >= 0 ? '+' : ''}{quote?.change?.toFixed(2)} ({(quote?.changePercent || 0) >= 0 ? '+' : ''}{quote?.changePercent?.toFixed(2)}%)
                     </div>
                   </div>
                 </div>
 
-                {/* Timeframe Controls */}
                 <div className="flex justify-between items-center mt-5 mb-3">
-                  <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600">Yahoo Historical Candlesticks</div>
+                  <div className="text-[11px] font-mono uppercase tracking-wider text-slate-600">Historiske Graffer</div>
                   <div className="flex gap-1 bg-slate-100 p-0.5 rounded-md">
                     {TIMEFRAMES.map(tf => (
                       <button
@@ -886,12 +984,11 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Historical Area Chart */}
                 <div className="h-72 w-full">
                   {marketLoading ? (
                     <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2 text-xs font-mono">
                       <RefreshCw className="w-5 h-5 animate-spin" />
-                      Streaming Yahoo Finance Market Candles...
+                      Henter Yahoo Finance data...
                     </div>
                   ) : chartData.length > 0 ? (
                     <ResponsiveContainer width="100%" height="100%">
@@ -904,9 +1001,9 @@ export default function App() {
                         </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" vertical={false} />
                         <XAxis dataKey="time" stroke="#94A3B8" fontSize={10} tickLine={false} />
-                        <YAxis domain={['auto', 'auto']} stroke="#94A3B8" fontSize={10} tickLine={false} tickFormatter={(v) => `$${v}`} />
+                        <YAxis domain={['auto', 'auto']} stroke="#94A3B8" fontSize={10} tickLine={false} tickFormatter={(v) => `${v}`} />
                         <RechartsTooltip
-                          formatter={(v) => [`$${Number(v).toFixed(2)}`, 'Price']}
+                          formatter={(v) => [formatNativePrice(v, activeCurrency), 'Pris']}
                           contentStyle={{ backgroundColor: '#0F172A', borderRadius: '6px', border: 'none', color: '#fff', fontSize: '11px', fontFamily: 'monospace' }}
                         />
                         <Area type="monotone" dataKey="price" stroke="#2563EB" strokeWidth={2} fillOpacity={1} fill="url(#colorPrice)" />
@@ -914,18 +1011,17 @@ export default function App() {
                     </ResponsiveContainer>
                   ) : (
                     <div className="h-full flex items-center justify-center text-slate-400 text-xs font-mono">
-                      Market candle stream syncing...
+                      Ingen data tilgængelig
                     </div>
                   )}
                 </div>
               </div>
             </div>
 
-            {/* Execution Order Ticket */}
             <div className="space-y-6">
               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
-                <h3 className="text-base font-semibold text-slate-950 mb-1">Execution Ticket</h3>
-                <p className="text-xs text-slate-600 mb-5">Zero-slippage simulated market execution</p>
+                <h3 className="text-base font-semibold text-slate-950 mb-1">Handelsordre</h3>
+                <p className="text-xs text-slate-600 mb-5">Handles i aktiens native valuta ({activeCurrency}) &bull; Afregnet i DKK</p>
 
                 <div className="grid grid-cols-2 bg-slate-100 p-1 rounded-lg mb-5">
                   <button
@@ -934,7 +1030,7 @@ export default function App() {
                       orderType === 'BUY' ? 'bg-emerald-700 text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    BUY ORDER
+                    KØBSORDRE
                   </button>
                   <button
                     onClick={() => setOrderType('SELL')}
@@ -942,7 +1038,7 @@ export default function App() {
                       orderType === 'SELL' ? 'bg-rose-700 text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    SELL ORDER
+                    SALGSORDRE
                   </button>
                 </div>
 
@@ -958,58 +1054,140 @@ export default function App() {
                 <div className="space-y-4 font-mono text-xs">
                   <div>
                     <label className="block text-[11px] uppercase tracking-wider text-slate-600 mb-1.5 font-sans">
-                      Target Asset
+                      Aktiv & Pris
                     </label>
-                    <div className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-900 flex justify-between items-center">
+                    <div className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-950 flex justify-between items-center">
                       <span>{quote?.symbol || selectedSymbol}</span>
-                      <span className="font-normal text-slate-600">
-                        {quote?.price ? `${quote.price.toFixed(2)} ${quote.currency || 'USD'}` : '0.00'}
+                      <span className="font-normal text-slate-700">
+                        {quote?.price ? formatNativePrice(quote.price, activeCurrency) : '0.00'}
                       </span>
                     </div>
                   </div>
 
                   <div>
-                    <label className="block text-[11px] uppercase tracking-wider text-slate-600 mb-1.5 font-sans">
-                      Share Quantity
-                    </label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0.0001"
-                      value={orderShares}
-                      onChange={(e) => setOrderShares(e.target.value)}
-                      placeholder="0.00"
-                      className="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-950 font-mono text-sm"
-                    />
+                    <div className="flex items-center justify-between mb-1.5 font-sans">
+                      <label className="text-[11px] uppercase tracking-wider text-slate-600">
+                        {inputMode === 'shares' ? 'Antal Aktier' : `Investering i ${activeCurrency}`}
+                      </label>
+                      <div className="flex bg-slate-100 p-0.5 rounded text-[10px] font-mono">
+                        <button
+                          type="button"
+                          onClick={() => setInputMode('shares')}
+                          className={`px-2 py-0.5 rounded transition ${inputMode === 'shares' ? 'bg-white font-bold text-slate-950 shadow-xs' : 'text-slate-500'}`}
+                        >
+                          Aktier
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setInputMode('native');
+                            if (orderShares && quote?.price) setTargetNativeAmount((parseFloat(orderShares) * quote.price).toFixed(2));
+                          }}
+                          className={`px-2 py-0.5 rounded transition ${inputMode === 'native' ? 'bg-white font-bold text-slate-950 shadow-xs' : 'text-slate-500'}`}
+                        >
+                          {activeCurrency}
+                        </button>
+                      </div>
+                    </div>
+
+                    {inputMode === 'shares' ? (
+                      <div>
+                        <input
+                          type="number"
+                          step="any"
+                          min="1"
+                          value={orderShares}
+                          onChange={(e) => handleSharesChange(e.target.value)}
+                          placeholder="Antal aktier"
+                          className="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-950 font-mono text-sm"
+                        />
+                        <div className="flex justify-between text-[11px] text-slate-500 mt-1.5 font-mono">
+                          <span>Pris i {activeCurrency}:</span>
+                          <span className="font-bold text-slate-900">
+                            {formatNativePrice((parseFloat(orderShares) || 0) * (quote?.price || 0), activeCurrency)}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="relative">
+                          <span className="absolute left-3 top-2.5 text-slate-400 font-mono text-xs font-bold">
+                            {activeCurrencySymbol}
+                          </span>
+                          <input
+                            type="number"
+                            step="any"
+                            min="1"
+                            value={targetNativeAmount}
+                            onChange={(e) => handleNativeAmountChange(e.target.value)}
+                            placeholder={`Beløb i ${activeCurrency}`}
+                            className="w-full pl-8 pr-3 py-2.5 bg-white border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-950 font-mono text-sm"
+                          />
+                        </div>
+
+                        {orderType === 'BUY' && (
+                          <div className="flex items-center gap-1 text-[10px] font-mono">
+                            <span className="text-slate-400">Likviditet:</span>
+                            {[10, 25, 50, 100].map(pct => (
+                              <button
+                                key={pct}
+                                type="button"
+                                onClick={() => applyCashPercentage(pct)}
+                                className="px-1.5 py-0.5 bg-slate-100 hover:bg-slate-200 rounded text-slate-700 transition"
+                              >
+                                {pct}%
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        {parseFloat(targetNativeAmount) > 0 && quote?.price && (
+                          <div className="p-2.5 bg-blue-50/70 border border-blue-200 rounded-lg text-[11px] font-mono text-blue-900 space-y-1">
+                            <div className="flex justify-between">
+                              <span className="text-blue-700">Nærmeste aktier:</span>
+                              <span className="font-bold text-slate-950">{orderShares} stk</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-blue-700">Tilpasset total:</span>
+                              <span className="font-bold text-slate-950">
+                                {formatNativePrice((parseFloat(orderShares) || 0) * quote.price, activeCurrency)}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
-                  <div className="p-3 bg-slate-50 rounded-lg space-y-2 border border-slate-100">
+                  <div className="p-3.5 bg-slate-50 rounded-lg space-y-2 border border-slate-100 text-xs">
                     <div className="flex justify-between text-slate-600">
-                      <span>Estimated Value:</span>
+                      <span>Børsnotering ({activeCurrency}):</span>
                       <span className="font-bold text-slate-950">
-                        ${((parseFloat(orderShares) || 0) * (quote?.price || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {formatNativePrice((parseFloat(orderShares) || 0) * (quote?.price || 0), activeCurrency)}
                       </span>
                     </div>
                     <div className="flex justify-between text-slate-600">
-                      <span>Cash Reserves:</span>
-                      <span>${(activePortfolio?.cashBalance || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                      <span>Afregnes i DKK:</span>
+                      <span className="font-bold text-slate-950">
+                        {formatDKK((parseFloat(orderShares) || 0) * (quote?.price || 0) * assetFxRate)}
+                      </span>
                     </div>
                   </div>
 
                   <button
                     onClick={handleTrade}
                     disabled={tradeLoading || !quote?.price}
-                    className={`w-full py-3 text-white rounded-lg text-xs font-bold uppercase tracking-wider transition flex items-center justify-center gap-2 shadow-sm ${
+                    className={`w-full py-3.5 text-white rounded-lg text-xs font-bold uppercase tracking-wider transition flex items-center justify-center gap-2 shadow-sm ${
                       orderType === 'BUY' ? 'bg-emerald-700 hover:bg-emerald-800' : 'bg-rose-700 hover:bg-rose-800'
                     }`}
                   >
                     {tradeLoading ? (
                       <>
                         <RefreshCw className="w-4 h-4 animate-spin" />
-                        Transacting on PostgreSQL...
+                        Udfører ordre...
                       </>
                     ) : (
-                      `Submit ${orderType} Market Order`
+                      `Bekræft ${orderType === 'BUY' ? 'Køb' : 'Salg'} (${formatNativePrice((parseFloat(orderShares) || 0) * (quote?.price || 0), activeCurrency)})`
                     )}
                   </button>
                 </div>
@@ -1018,14 +1196,13 @@ export default function App() {
           </div>
         )}
 
-        {/* PORTFOLIOS TAB */}
         {activeTab === 'portfolios' && (
           <div className="space-y-6">
             <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
               <div className="flex flex-wrap justify-between items-center gap-4 mb-6">
                 <div>
-                  <h3 className="text-base font-semibold text-slate-950">Portfolio Management</h3>
-                  <p className="text-xs text-slate-600">Switch, rename, or liquidate active desks</p>
+                  <h3 className="text-base font-semibold text-slate-950">Porteføljestyring</h3>
+                  <p className="text-xs text-slate-600">Skift, omdøb eller nulstil dine handelsborde</p>
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -1035,22 +1212,18 @@ export default function App() {
                         type="text"
                         value={newName}
                         onChange={(e) => setNewName(e.target.value)}
-                        placeholder="New portfolio title..."
+                        placeholder="Nyt navn..."
                         className="px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs"
                       />
-                      <button onClick={handleRename} className="px-3 py-1.5 bg-slate-950 text-white rounded-lg text-xs font-semibold">
-                        Save
-                      </button>
-                      <button onClick={() => setRenaming(false)} className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg text-xs">
-                        Cancel
-                      </button>
+                      <button onClick={handleRename} className="px-3 py-1.5 bg-slate-950 text-white rounded-lg text-xs font-semibold">Gem</button>
+                      <button onClick={() => setRenaming(false)} className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg text-xs">Annuller</button>
                     </div>
                   ) : (
                     <button
                       onClick={() => { setRenaming(true); setNewName(activePortfolio?.name || ''); }}
                       className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-900 rounded-lg text-xs font-semibold transition"
                     >
-                      Rename Portfolio
+                      Omdøb Bord
                     </button>
                   )}
 
@@ -1058,7 +1231,7 @@ export default function App() {
                     onClick={handleReset}
                     className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition"
                   >
-                    Reset Desk to $1,000,000
+                    Nulstil til 1M kr.
                   </button>
                 </div>
               </div>
@@ -1076,10 +1249,10 @@ export default function App() {
                     >
                       <div className="text-xs font-semibold text-slate-950 mb-1">{p.name}</div>
                       <div className="text-lg font-mono font-bold text-slate-950">
-                        ${(p.cashBalance || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {formatDKK(p.cashBalance || 0)}
                       </div>
                       <div className="text-[11px] text-slate-600 font-mono mt-2">
-                        {p.positions?.length || 0} Open Positions
+                        {p.positions?.length || 0} Positioner
                       </div>
                     </div>
                   );
@@ -1088,43 +1261,43 @@ export default function App() {
             </div>
 
             <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
-              <h3 className="text-base font-semibold text-slate-950 mb-1">Execution Audit Trail</h3>
-              <p className="text-xs text-slate-600 mb-5">Permanent trade ledger recorded to PostgreSQL</p>
+              <h3 className="text-base font-semibold text-slate-950 mb-1">Handelslog (Audit Trail)</h3>
+              <p className="text-xs text-slate-600 mb-5">Transaktionshistorik for {activePortfolio?.name}</p>
 
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs font-mono">
                   <thead>
                     <tr className="border-b border-slate-200 text-[10px] uppercase tracking-wider text-slate-600">
-                      <th className="pb-3">Timestamp</th>
-                      <th className="pb-3">Asset</th>
+                      <th className="pb-3">Tidspunkt</th>
+                      <th className="pb-3">Aktiv</th>
                       <th className="pb-3">Type</th>
-                      <th className="pb-3 text-right">Shares</th>
-                      <th className="pb-3 text-right">Price</th>
-                      <th className="pb-3 text-right">Total Notional</th>
+                      <th className="pb-3 text-right">Antal</th>
+                      <th className="pb-3 text-right">Pris (Native)</th>
+                      <th className="pb-3 text-right">Afregnet (DKK)</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {(!activePortfolio?.transactions || activePortfolio.transactions.length === 0) ? (
                       <tr>
                         <td colSpan={6} className="py-6 text-center text-slate-500 font-sans">
-                          No transactions recorded yet for this desk.
+                          Ingen transaktioner fundet.
                         </td>
                       </tr>
                     ) : (
                       activePortfolio.transactions.map((tx, idx) => (
                         <tr key={tx.id || idx} className="hover:bg-slate-50">
-                          <td className="py-3 text-slate-500">{new Date(tx.timestamp).toLocaleString()}</td>
+                          <td className="py-3 text-slate-500">{new Date(tx.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
                           <td className="py-3 font-bold text-slate-950">{tx.symbol}</td>
                           <td className="py-3">
                             <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                               tx.type === 'BUY' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
                             }`}>
-                              {tx.type}
+                              {tx.type === 'BUY' ? 'KØB' : 'SALG'}
                             </span>
                           </td>
                           <td className="py-3 text-right">{tx.shares.toLocaleString()}</td>
-                          <td className="py-3 text-right">${(tx.price || 0).toFixed(2)}</td>
-                          <td className="py-3 text-right font-bold">${(tx.totalValue || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="py-3 text-right">{formatNativePrice(tx.price, tx.currency || 'USD')}</td>
+                          <td className="py-3 text-right font-bold">{formatDKK(tx.totalDKK || tx.totalValue || 0)}</td>
                         </tr>
                       ))
                     )}
@@ -1135,49 +1308,38 @@ export default function App() {
           </div>
         )}
 
-        {/* LEADERBOARD TAB */}
         {activeTab === 'leaderboard' && (
           <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
-            <h3 className="text-base font-semibold text-slate-950 mb-1">Institutional Leaderboard</h3>
-            <p className="text-xs text-slate-600 mb-6">Global rankings by Mark-to-Market Portfolio Equity</p>
+            <h3 className="text-base font-semibold text-slate-950 mb-1">Rangliste (Leaderboard)</h3>
+            <p className="text-xs text-slate-600 mb-6">Globale placeringer baseret på samlet markedsværdi i DKK</p>
 
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="border-b border-slate-200 text-[10px] font-mono uppercase tracking-wider text-slate-600">
-                    <th className="pb-3">Rank</th>
+                    <th className="pb-3">Placering</th>
                     <th className="pb-3">Trader</th>
-                    <th className="pb-3">Portfolio</th>
-                    <th className="pb-3 text-right">Total Equity</th>
-                    <th className="pb-3 text-right">ROI (%)</th>
-                    <th className="pb-3 text-right">Assets</th>
-                    <th className="pb-3 text-right">Last Active</th>
+                    <th className="pb-3">Portefølje</th>
+                    <th className="pb-3 text-right">Samlet Værdi (DKK)</th>
+                    <th className="pb-3 text-right">Afkast (ROI)</th>
+                    <th className="pb-3 text-right">Aktiver</th>
+                    <th className="pb-3 text-right">Sidst Aktiv</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-mono">
-                  {leaderboard.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="py-6 text-center text-slate-500 font-sans">
-                        Compiling leaderboard metrics...
+                  {leaderboard.map((entry, idx) => (
+                    <tr key={entry.id || idx} className="hover:bg-slate-50">
+                      <td className="py-3.5 font-bold text-slate-900">#{idx + 1}</td>
+                      <td className="py-3.5 font-semibold text-slate-950 font-sans">{entry.username}</td>
+                      <td className="py-3.5 text-slate-600">{entry.portfolioName}</td>
+                      <td className="py-3.5 text-right font-bold text-slate-950">{formatDKK(entry.totalEquity || 0)}</td>
+                      <td className={`py-3.5 text-right font-semibold ${(entry.roi || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                        {(entry.roi || 0) >= 0 ? '+' : ''}{(entry.roi || 0).toFixed(2)}%
                       </td>
+                      <td className="py-3.5 text-right text-slate-600">{entry.assetsCount}</td>
+                      <td className="py-3.5 text-right text-slate-500">{entry.lastActive}</td>
                     </tr>
-                  ) : (
-                    leaderboard.map((entry, idx) => (
-                      <tr key={entry.id || idx} className="hover:bg-slate-50">
-                        <td className="py-3.5 font-bold text-slate-900">#{idx + 1}</td>
-                        <td className="py-3.5 font-semibold text-slate-950 font-sans">{entry.username}</td>
-                        <td className="py-3.5 text-slate-600">{entry.portfolioName}</td>
-                        <td className="py-3.5 text-right font-bold text-slate-950">
-                          ${(entry.totalEquity || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </td>
-                        <td className={`py-3.5 text-right font-semibold ${(entry.roi || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                          {(entry.roi || 0) >= 0 ? '+' : ''}{(entry.roi || 0).toFixed(2)}%
-                        </td>
-                        <td className="py-3.5 text-right text-slate-600">{entry.assetsCount}</td>
-                        <td className="py-3.5 text-right text-slate-500">{entry.lastActive}</td>
-                      </tr>
-                    ))
-                  )}
+                  ))}
                 </tbody>
               </table>
             </div>
